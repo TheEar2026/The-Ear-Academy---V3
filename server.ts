@@ -1,5 +1,4 @@
 import express from "express";
-import { createServer as createViteServer } from "vite";
 import path from "path";
 import dotenv from "dotenv";
 import axios from "axios";
@@ -9,7 +8,15 @@ import { GoogleGenAI } from "@google/genai";
 
 dotenv.config();
 
-const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || "" });
+// Initialize AI lazily or safely
+let ai: any = null;
+try {
+  if (process.env.GEMINI_API_KEY) {
+    ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+  }
+} catch (e) {
+  console.error("AI Initialization failed:", e);
+}
 
 const app = express();
 const PORT = 3000;
@@ -118,7 +125,9 @@ app.get("/api/status", (req, res) => {
 // AI Routes
 app.post("/api/ai/summary", async (req, res) => {
   const { prompt, config } = req.body;
-  if (!process.env.GEMINI_API_KEY) {
+  
+  if (!process.env.GEMINI_API_KEY || !ai) {
+    console.log("[Server] Using simulated AI summary (No key)");
     const lowercasePrompt = prompt.toLowerCase();
     let sentiment = "NEUTRAL";
     let score = 50;
@@ -128,33 +137,39 @@ app.post("/api/ai/summary", async (req, res) => {
     } else if (lowercasePrompt.includes("confusing") || lowercasePrompt.includes("too hard")) {
       sentiment = "CRITICAL"; score = 25; summary = "Feedback mentions issues with complexity.";
     }
-    return res.json({ text: JSON.stringify({ summary, sentiment, score, reasoning: "Simulated" }) });
+    return res.json({ text: JSON.stringify({ summary, sentiment, score, reasoning: "Simulated (API Key Missing)" }) });
   }
+
   try {
-    const response = await ai.models.generateContent({
+    const result = await ai.models.generateContent({
       model: "gemini-3-flash-preview",
       contents: prompt,
       config: config
     });
-    res.json({ text: response.text });
+    res.json({ text: result.text });
   } catch (error: any) {
+    console.error("[Server] AI Summary Error:", error);
     res.status(500).json({ error: error.message });
   }
 });
 
 app.post("/api/ai/course-summary", async (req, res) => {
   const { prompt, config } = req.body;
-  if (!process.env.GEMINI_API_KEY) {
-    return res.json({ text: JSON.stringify({ summary: "Simulated course summary.", improvements: ["Improvement 1", "Improvement 2"] }) });
+
+  if (!process.env.GEMINI_API_KEY || !ai) {
+    console.log("[Server] Using simulated course summary (No key)");
+    return res.json({ text: JSON.stringify({ summary: "Simulated course summary generated because no AI key is provided.", improvements: ["Add more interactive quizzes", "Slow down the pace of Unit 2"] }) });
   }
+
   try {
-    const response = await ai.models.generateContent({
+    const result = await ai.models.generateContent({
       model: "gemini-3-flash-preview",
       contents: prompt,
       config: config
     });
-    res.json({ text: response.text });
+    res.json({ text: result.text });
   } catch (error: any) {
+    console.error("[Server] AI Course Summary Error:", error);
     res.status(500).json({ error: error.message });
   }
 });
@@ -199,8 +214,9 @@ app.post("/api/update-sentiment", async (req: any, res: any) => {
   }
 });
 
-// Production serving
-if (process.env.NODE_ENV === "production" || process.env.VERCEL === "1") {
+// Production static serving (Only if NOT on Vercel)
+// Vercel handles static serving via zero-config/vercel.json
+if ((process.env.NODE_ENV === "production") && !process.env.VERCEL) {
   const distPath = path.join(process.cwd(), 'dist');
   app.use(express.static(distPath));
   app.get('*', (req, res) => {
@@ -208,21 +224,27 @@ if (process.env.NODE_ENV === "production" || process.env.VERCEL === "1") {
   });
 }
 
-// Dev server
-async function startDevServer() {
-  if (process.env.NODE_ENV !== "production" && process.env.VERCEL !== "1") {
+// Dev server and standalone listening
+async function startServer() {
+  if (process.env.NODE_ENV !== "production" && !process.env.VERCEL) {
+    // Dynamic import to avoid loading Vite in production lambda
+    const { createServer: createViteServer } = await import("vite");
     const vite = await createViteServer({ server: { middlewareMode: true }, appType: "spa" });
     app.use(vite.middlewares);
+    
     app.listen(PORT, "0.0.0.0", () => {
-      console.log(`Dev server running on http://localhost:${PORT}`);
+      console.log(`[Dev] Server running on http://localhost:${PORT}`);
     });
-  } else if (process.env.SERVERLESS !== "1" && process.env.VERCEL !== "1") {
+  } else if (!process.env.VERCEL) {
+    // Standalone production start
     app.listen(PORT, "0.0.0.0", () => {
-      console.log(`Production server running on http://localhost:${PORT}`);
+      console.log(`[Prod] Server running on http://localhost:${PORT}`);
     });
   }
 }
 
-startDevServer();
+startServer().catch(err => {
+  console.error("Failed to start server:", err);
+});
 
 export default app;
