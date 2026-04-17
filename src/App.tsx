@@ -1608,10 +1608,40 @@ export default function App() {
                       <button onClick={() => fetchData('legacy')} className="text-primary font-bold hover:underline">Try again</button>
                     </div>
                   ) : !configStatus.legacyConfigured ? (
-                    <div className="glass p-12 rounded-3xl text-center space-y-4">
+                    <div className="glass p-12 rounded-3xl text-center space-y-6">
                       <Database size={48} className="text-on-surface-variant mx-auto opacity-20" />
-                      <h2 className="text-xl font-headline font-black">Legacy Data Not Connected</h2>
-                      <p className="text-on-surface-variant max-w-md mx-auto">Please provide a <b>LEGACY_SHEET_ID</b> in the environment variables to view archived data.</p>
+                      <div>
+                        <h2 className="text-xl font-headline font-black">Legacy Data Not Connected</h2>
+                        <p className="text-on-surface-variant max-w-md mx-auto mt-2">To view archived data, you need to connect a Google Sheet by following these steps:</p>
+                      </div>
+                      
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-left max-w-2xl mx-auto">
+                        <div className="p-4 rounded-xl bg-surface-container/50 border border-outline-variant/20">
+                          <p className="text-[10px] font-black uppercase text-primary mb-1">Step 1</p>
+                          <p className="text-xs font-medium">Get your Sheet ID from the URL (the string between /d/ and /edit).</p>
+                        </div>
+                        <div className="p-4 rounded-xl bg-surface-container/50 border border-outline-variant/20">
+                          <p className="text-[10px] font-black uppercase text-primary mb-1">Step 2</p>
+                          <p className="text-xs font-medium">In Sheets: File &gt; Share &gt; Anyone with the link can view.</p>
+                        </div>
+                        <div className="p-4 rounded-xl bg-surface-container/50 border border-outline-variant/20">
+                          <p className="text-[10px] font-black uppercase text-primary mb-1">Step 3</p>
+                          <p className="text-xs font-medium">In Vercel Settings: Add <b>LEGACY_SHEET_ID</b> variable.</p>
+                        </div>
+                        <div className="p-4 rounded-xl bg-surface-container/50 border border-outline-variant/20">
+                          <p className="text-[10px] font-black uppercase text-primary mb-1">Step 4</p>
+                          <p className="text-xs font-medium">Deploy your changes to apply the new secret.</p>
+                        </div>
+                      </div>
+
+                      <div className="pt-4">
+                        <button 
+                          onClick={() => fetchData('legacy')} 
+                          className="px-6 py-3 bg-primary text-on-primary rounded-full font-black uppercase tracking-widest text-xs hover:scale-105 transition-transform"
+                        >
+                          Check Connection
+                        </button>
+                      </div>
                     </div>
                   ) : (
                     <>
@@ -2090,37 +2120,55 @@ export default function App() {
                   className="max-w-2xl mx-auto space-y-8"
                 >
                   <div className="glass p-8 rounded-3xl space-y-6">
-                    <h2 className="text-2xl font-headline font-black">Connection Settings</h2>
+                    <h2 className="text-2xl font-headline font-black">Connection Status</h2>
                     <div className="space-y-4">
                       <div className="p-4 bg-surface-container-low rounded-xl border border-outline-variant/10">
-                        <label className="block text-[10px] font-bold uppercase tracking-widest text-on-surface-variant mb-1">Google Sheet Status</label>
-                        <div className="flex items-center gap-2 text-secondary-fixed">
-                          <div className="w-2 h-2 rounded-full bg-secondary-fixed" />
-                          <span className="text-sm font-bold">Connected & Syncing</span>
+                        <label className="block text-[10px] font-bold uppercase tracking-widest text-on-surface-variant mb-1">Configuration Status</label>
+                        <div className="space-y-2 mt-2">
+                          <div className="flex items-center justify-between">
+                            <span className="text-xs font-medium">Current Sheet</span>
+                            <span className={`text-xs font-black p-1 px-2 rounded ${configStatus.currentConfigured ? 'bg-secondary-fixed/10 text-secondary-fixed' : 'bg-tertiary-container/10 text-tertiary-container'}`}>
+                              {configStatus.currentConfigured ? 'CONNECTED' : 'NOT CONNECTED'}
+                            </span>
+                          </div>
+                          <div className="flex items-center justify-between">
+                            <span className="text-xs font-medium">Legacy Archive</span>
+                            <span className={`text-xs font-black p-1 px-2 rounded ${configStatus.legacyConfigured ? 'bg-secondary-fixed/10 text-secondary-fixed' : 'bg-tertiary-container/10 text-tertiary-container'}`}>
+                              {configStatus.legacyConfigured ? 'CONNECTED' : 'NOT CONNECTED'}
+                            </span>
+                          </div>
+                          <div className="flex items-center justify-between">
+                            <span className="text-xs font-medium">AI Analysis Engine</span>
+                            <span className={`text-xs font-black p-1 px-2 rounded ${configStatus.aiConfigured ? 'bg-secondary-fixed/10 text-secondary-fixed' : 'bg-tertiary-container/10 text-tertiary-container'}`}>
+                              {configStatus.aiConfigured ? 'ACTIVE' : 'SIMULATED MODE'}
+                            </span>
+                          </div>
                         </div>
                       </div>
-                      <div className="p-4 bg-surface-container-low rounded-xl border border-outline-variant/10">
-                        <label className="block text-[10px] font-bold uppercase tracking-widest text-on-surface-variant mb-1">Current Sheet ID</label>
-                        <p className="text-sm font-bold">{configStatus.currentConfigured ? '✅ Configured' : '❌ Missing'}</p>
+                    </div>
+                  </div>
+
+                  <div className="glass p-8 rounded-3xl space-y-6">
+                    <h2 className="text-lg font-headline font-black">How to Connect Data</h2>
+                    <div className="space-y-4">
+                      <div className="flex gap-4 p-4 rounded-xl bg-surface-container-high/30">
+                        <div className="flex-shrink-0 w-8 h-8 rounded-full bg-primary/20 flex items-center justify-center text-primary font-black">1</div>
+                        <p className="text-xs font-medium leading-loose">Open your Google Sheet and copy the long string of characters in the URL after <code>/d/</code>. This is your <b>Sheet ID</b>.</p>
                       </div>
-                      <div className="p-4 bg-surface-container-low rounded-xl border border-outline-variant/10">
-                        <label className="block text-[10px] font-bold uppercase tracking-widest text-on-surface-variant mb-1">Legacy Sheet ID</label>
-                        <p className="text-sm font-bold">{configStatus.legacyConfigured ? '✅ Configured' : '❌ Missing'}</p>
+                      <div className="flex gap-4 p-4 rounded-xl bg-surface-container-high/30">
+                        <div className="flex-shrink-0 w-8 h-8 rounded-full bg-primary/20 flex items-center justify-center text-primary font-black">2</div>
+                        <p className="text-xs font-medium leading-loose">Click <b>Share</b> in Google Sheets and change "Restricted" to <b>"Anyone with the link"</b> (Viewer role is enough).</p>
                       </div>
-                      <div className="p-4 bg-surface-container-low rounded-xl border border-outline-variant/10">
-                        <label className="block text-[10px] font-bold uppercase tracking-widest text-on-surface-variant mb-1">Data Source</label>
-                        <p className="text-sm font-mono text-on-surface truncate">Google Sheets CSV Export</p>
-                      </div>
-                      <div className="p-4 bg-surface-container-low rounded-xl border border-outline-variant/10">
-                        <label className="block text-[10px] font-bold uppercase tracking-widest text-on-surface-variant mb-1">Last Sync</label>
-                        <p className="text-sm font-bold">{new Date().toLocaleTimeString()}</p>
+                      <div className="flex gap-4 p-4 rounded-xl bg-surface-container-high/30">
+                        <div className="flex-shrink-0 w-8 h-8 rounded-full bg-primary/20 flex items-center justify-center text-primary font-black">3</div>
+                        <p className="text-xs font-medium leading-loose">In Vercel Dashboard Settings, add <code>GOOGLE_SHEET_ID</code> and <code>LEGACY_SHEET_ID</code> environment variables.</p>
                       </div>
                     </div>
                     <button 
-                      onClick={fetchData}
-                      className="w-full py-4 bg-surface-container-high rounded-xl font-bold hover:bg-surface-container transition-colors"
+                      onClick={() => fetchData()}
+                      className="w-full py-4 bg-primary text-on-primary rounded-xl font-black uppercase tracking-widest text-xs hover:scale-[1.02] transition-transform"
                     >
-                      Force Re-sync
+                      Refresh Sync Now
                     </button>
                   </div>
 
