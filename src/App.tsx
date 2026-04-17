@@ -40,7 +40,6 @@ import {
   Cell
 } from 'recharts';
 import { motion, AnimatePresence } from 'motion/react';
-import { GoogleGenAI, Type } from "@google/genai";
 
 // Types
 interface Submission {
@@ -104,13 +103,11 @@ export default function App() {
   const [legacyError, setLegacyError] = useState<string | null>(null);
   const [setupRequired, setSetupRequired] = useState(false);
   const [isDemo, setIsDemo] = useState(false);
-  const [configStatus, setConfigStatus] = useState({ currentConfigured: false, legacyConfigured: false });
+  const [configStatus, setConfigStatus] = useState({ currentConfigured: false, legacyConfigured: false, aiConfigured: false });
   const [aiLoading, setAiLoading] = useState(false);
   const [isDisputing, setIsDisputing] = useState(false);
   const [isSaved, setIsSaved] = useState(false);
   const [courseSummaries, setCourseSummaries] = useState<Record<string, { summary: string; improvements: string[]; loading: boolean }>>({});
-
-  const ai = useMemo(() => new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY }), []);
 
   const groupedSubmissions = useMemo(() => {
     const groups: Record<string, Submission[]> = {};
@@ -184,25 +181,31 @@ export default function App() {
         }
       `;
 
-      const response = await ai.models.generateContent({
-        model: "gemini-3-flash-preview",
-        contents: prompt,
-        config: {
-          responseMimeType: "application/json",
-          responseSchema: {
-            type: Type.OBJECT,
-            properties: {
-              summary: { type: Type.STRING },
-              sentiment: { type: Type.STRING },
-              score: { type: Type.NUMBER },
-              reasoning: { type: Type.STRING }
-            },
-            required: ["summary", "sentiment", "score", "reasoning"]
+      const response = await fetch('/api/ai/summary', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          prompt,
+          config: {
+            responseMimeType: "application/json",
+            responseSchema: {
+              type: "object",
+              properties: {
+                summary: { type: "string" },
+                sentiment: { type: "string" },
+                score: { type: "number" },
+                reasoning: { type: "string" }
+              },
+              required: ["summary", "sentiment", "score", "reasoning"]
+            }
           }
-        }
+        })
       });
 
-      const result = JSON.parse(response.text || '{}');
+      if (!response.ok) throw new Error("AI Summary expansion failed");
+
+      const data = await response.json();
+      const result = JSON.parse(data.text || '{}');
       
       const sentimentMap: Record<string, { color: string }> = {
         'POSITIVE': { color: 'text-secondary-fixed bg-secondary-fixed/10 ring-secondary-fixed/20' },
@@ -420,26 +423,32 @@ export default function App() {
         }
       `;
 
-      const response = await ai.models.generateContent({
-        model: "gemini-3-flash-preview",
-        contents: prompt,
-        config: {
-          responseMimeType: "application/json",
-          responseSchema: {
-            type: Type.OBJECT,
-            properties: {
-              summary: { type: Type.STRING },
-              improvements: { 
-                type: Type.ARRAY,
-                items: { type: Type.STRING }
-              }
-            },
-            required: ["summary", "improvements"]
+      const response = await fetch('/api/ai/course-summary', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          prompt,
+          config: {
+            responseMimeType: "application/json",
+            responseSchema: {
+              type: "object",
+              properties: {
+                summary: { type: "string" },
+                improvements: { 
+                  type: "array",
+                  items: { type: "string" }
+                }
+              },
+              required: ["summary", "improvements"]
+            }
           }
-        }
+        })
       });
 
-      const result = JSON.parse(response.text || '{}');
+      if (!response.ok) throw new Error("Course summary generation failed");
+
+      const data = await response.json();
+      const result = JSON.parse(data.text || '{}');
       setCourseSummaries(prev => ({
         ...prev,
         [courseName]: { 
@@ -847,7 +856,7 @@ export default function App() {
       <main className="ml-[100px] flex-1 flex flex-col">
         {/* Demo Banner */}
         <AnimatePresence>
-          {isDemo && (
+          {(isDemo || !configStatus.aiConfigured) && (
             <motion.div 
               initial={{ height: 0, opacity: 0 }}
               animate={{ height: 'auto', opacity: 1 }}
@@ -857,7 +866,11 @@ export default function App() {
               <div className="flex items-center gap-2 text-primary">
                 <Sparkles size={14} />
                 <span className="text-[10px] font-headline font-bold uppercase tracking-widest">
-                  Viewing Demo Data: Connect your Google Sheet in Settings to see real feedback
+                  {isDemo && !configStatus.aiConfigured 
+                    ? "Viewing Demo Data & Simulated AI: Connect Google Sheets and Gemini API in Settings"
+                    : !configStatus.aiConfigured
+                      ? "Simulated AI Active: Add your GEMINI_API_KEY in Settings for real analysis"
+                      : "Viewing Demo Data: Connect your Google Sheet in Settings to see real feedback"}
                 </span>
               </div>
               <button 
