@@ -202,9 +202,16 @@ export default function App() {
         })
       });
 
-      if (!response.ok) throw new Error("AI Summary expansion failed");
+      const text = await response.text();
+      let data;
+      try {
+        data = JSON.parse(text);
+      } catch (e) {
+        throw new Error(`AI Server Error: ${text.slice(0, 100)}`);
+      }
 
-      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "AI Summary expansion failed");
+
       const result = JSON.parse(data.text || '{}');
       
       const sentimentMap: Record<string, { color: string }> = {
@@ -445,9 +452,16 @@ export default function App() {
         })
       });
 
-      if (!response.ok) throw new Error("Course summary generation failed");
+      const text = await response.text();
+      let data;
+      try {
+        data = JSON.parse(text);
+      } catch (e) {
+        throw new Error(`AI Server Error: ${text.slice(0, 100)}`);
+      }
 
-      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Course summary generation failed");
+
       const result = JSON.parse(data.text || '{}');
       setCourseSummaries(prev => ({
         ...prev,
@@ -681,7 +695,15 @@ export default function App() {
 
     try {
       const response = await fetch(`/api/data/${type}`);
-      const result = await response.json();
+      const text = await response.text();
+      
+      let result;
+      try {
+        result = JSON.parse(text);
+      } catch (e) {
+        console.error(`[Frontend] Failed to parse ${type} response as JSON:`, text);
+        throw new Error(`Server returned non-JSON response: ${text.slice(0, 100)}${text.length > 100 ? '...' : ''}`);
+      }
 
       console.log(`[Frontend] ${type} response:`, result);
 
@@ -743,8 +765,13 @@ export default function App() {
     const checkStatus = async () => {
       try {
         const response = await fetch('/api/status');
-        const status = await response.json();
-        setConfigStatus(status);
+        const text = await response.text();
+        try {
+          const status = JSON.parse(text);
+          setConfigStatus(status);
+        } catch (e) {
+          console.error("Failed to parse status response:", text);
+        }
       } catch (e) {
         console.error("Failed to check config status", e);
       }
