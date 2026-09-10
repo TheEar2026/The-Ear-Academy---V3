@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import { 
   LayoutDashboard, 
   BarChart3, 
@@ -25,7 +25,18 @@ import {
   Sparkles,
   RotateCcw,
   Check,
-  ShieldAlert
+  ShieldAlert,
+  BookOpen,
+  Sliders,
+  HelpCircle,
+  Layers,
+  CheckCircle2,
+  Award,
+  ArrowUpDown,
+  ArrowDown,
+  ArrowUp,
+  Filter,
+  ChevronDown
 } from 'lucide-react';
 import { 
   AreaChart, 
@@ -58,6 +69,11 @@ interface Submission {
   courseName: string;
   aiSummary?: string;
   aiSentiment?: string;
+  aspects?: {
+    engagement?: string;
+    clarity?: string;
+    confidence?: string;
+  };
   originalSentiment?: string;
   originalSentimentScore?: number;
   originalSentimentColor?: string;
@@ -79,6 +95,53 @@ interface DashboardStats {
   distribution: any[];
 }
 
+// Parse submission timestamp robustly across formats
+const parseSubmissionDate = (dateStr: string): number => {
+  if (!dateStr || dateStr === 'N/A' || dateStr === 'Unknown' || dateStr === 'Unknown Date') return 0;
+  
+  const trimmed = dateStr.trim();
+  
+  // 1. Standard ISO / string parse
+  const parsed = Date.parse(trimmed);
+  if (!isNaN(parsed) && parsed > 0) return parsed;
+
+  // 2. Format: dd/mm/yyyy or dd/mm/yyyy hh:mm[:ss] or mm/dd/yyyy
+  const dmyMatch = trimmed.match(/^(\d{1,2})[\/\-\.](\d{1,2})[\/\-\.](\d{4})(?:\s+(\d{1,2}):(\d{1,2})(?::(\d{1,2}))?)?/);
+  if (dmyMatch) {
+    const p1 = parseInt(dmyMatch[1], 10);
+    const p2 = parseInt(dmyMatch[2], 10);
+    const year = parseInt(dmyMatch[3], 10);
+    const hour = dmyMatch[4] ? parseInt(dmyMatch[4], 10) : 0;
+    const min = dmyMatch[5] ? parseInt(dmyMatch[5], 10) : 0;
+    const sec = dmyMatch[6] ? parseInt(dmyMatch[6], 10) : 0;
+    
+    // Determine whether p1 is day or month
+    let day = p1;
+    let month = p2 - 1;
+    if (p1 <= 12 && p2 > 12) {
+      day = p2;
+      month = p1 - 1;
+    }
+    const d = new Date(year, month, day, hour, min, sec);
+    if (!isNaN(d.getTime())) return d.getTime();
+  }
+
+  // 3. Format: yyyy/mm/dd or yyyy-mm-dd
+  const ymdMatch = trimmed.match(/^(\d{4})[\/\-\.](\d{1,2})[\/\-\.](\d{1,2})(?:\s+(\d{1,2}):(\d{1,2})(?::(\d{1,2}))?)?/);
+  if (ymdMatch) {
+    const year = parseInt(ymdMatch[1], 10);
+    const month = parseInt(ymdMatch[2], 10) - 1;
+    const day = parseInt(ymdMatch[3], 10);
+    const hour = ymdMatch[4] ? parseInt(ymdMatch[4], 10) : 0;
+    const min = ymdMatch[5] ? parseInt(ymdMatch[5], 10) : 0;
+    const sec = ymdMatch[6] ? parseInt(ymdMatch[6], 10) : 0;
+    const d = new Date(year, month, day, hour, min, sec);
+    if (!isNaN(d.getTime())) return d.getTime();
+  }
+
+  return 0;
+};
+
 // Logo Component
 const Logo = ({ className = "" }: { className?: string }) => (
   <div className={`flex flex-col items-center justify-center ${className}`}>
@@ -93,10 +156,18 @@ const Logo = ({ className = "" }: { className?: string }) => (
 export default function App() {
   const [activeTab, setActiveTab] = useState('Overview');
   const [selectedSubmission, setSelectedSubmission] = useState<Submission | null>(null);
+  const [isGuideModalOpen, setIsGuideModalOpen] = useState(false);
   const [submissions, setSubmissions] = useState<Submission[]>([]);
   const [legacySubmissions, setLegacySubmissions] = useState<Submission[]>([]);
   const [legacySubFilter, setLegacySubFilter] = useState<'all' | 'classroom' | 'instrumental'>('all');
   const [searchTerm, setSearchTerm] = useState('');
+  
+  // Date sorting and range filtering states (default to newest first)
+  const [dateSortOrder, setDateSortOrder] = useState<'newest' | 'oldest'>('newest');
+  const [dateRangeFilter, setDateRangeFilter] = useState<'all' | '7days' | '30days' | '90days' | 'thisYear'>('all');
+  const [isDateDropdownOpen, setIsDateDropdownOpen] = useState(false);
+  const dateDropdownRef = useRef<HTMLDivElement>(null);
+
   const [stats, setStats] = useState<DashboardStats | null>(null);
   const [legacyStats, setLegacyStats] = useState<DashboardStats | null>(null);
   const [loading, setLoading] = useState(true);
@@ -117,49 +188,73 @@ export default function App() {
   const [isSaved, setIsSaved] = useState(false);
   const [courseSummaries, setCourseSummaries] = useState<Record<string, { summary: string; improvements: string[]; loading: boolean }>>({});
 
+  // Close date dropdown on outside click
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (dateDropdownRef.current && !dateDropdownRef.current.contains(event.target as Node)) {
+        setIsDateDropdownOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
+
   const groupedSubmissions = useMemo(() => {
     const groups: Record<string, Submission[]> = {};
     submissions.forEach(s => {
-      const date = new Date(s.timestamp);
+      const time = parseSubmissionDate(s.timestamp);
+      const date = time > 0 ? new Date(time) : new Date(s.timestamp);
       const monthKey = isNaN(date.getTime()) 
-        ? 'Unknown' 
+        ? 'Unknown Date' 
         : date.toLocaleString('default', { month: 'long', year: 'numeric' });
       
       if (!groups[monthKey]) groups[monthKey] = [];
       groups[monthKey].push(s);
     });
     
+    // Sort submissions inside each month based on dateSortOrder
+    Object.keys(groups).forEach(key => {
+      groups[key].sort((a, b) => {
+        const timeA = parseSubmissionDate(a.timestamp);
+        const timeB = parseSubmissionDate(b.timestamp);
+        if (timeA === 0 && timeB === 0) return 0;
+        if (timeA === 0) return 1;
+        if (timeB === 0) return -1;
+        return dateSortOrder === 'newest' ? timeB - timeA : timeA - timeB;
+      });
+    });
+
     return Object.keys(groups)
       .sort((a, b) => {
-        if (a === 'Unknown') return 1;
-        if (b === 'Unknown') return -1;
-        return new Date(a).getTime() - new Date(b).getTime();
+        if (a === 'Unknown Date') return 1;
+        if (b === 'Unknown Date') return -1;
+        const timeA = new Date(a).getTime();
+        const timeB = new Date(b).getTime();
+        return dateSortOrder === 'newest' ? timeB - timeA : timeA - timeB;
       })
       .reduce((acc, key) => {
         acc[key] = groups[key];
         return acc;
       }, {} as Record<string, Submission[]>);
-  }, [submissions]);
+  }, [submissions, dateSortOrder]);
 
   const CLASSIFICATION_GUIDE = `
-    You are a CSAT scoring and sentiment analysis engine for The Ear Academy.
+    You are the Senior CSAT & Sentiment Analysis Engine for The Ear Academy.
     
-    ## Scoring rules
-    - CSAT % = (total positive responses ÷ total submissions) × 100
-    - Positive response → counts toward the score
-    - Neutral response → does not count toward the score
-    - Negative response → does not count toward the score
+    ## Weighted Multi-Factor Scoring Rubric
+    Evaluate student feedback holistically across 3 core dimensions:
+    1. Star Rating (40% Weight): 5 Stars (+1.0), 4 Stars (+0.75), 3 Stars (0.0), 2 Stars (-0.75), 1 Star (-1.0).
+    2. Facet Balance (30% Weight): 0 facets disliked or "None" (+1.0), 1 facet disliked (0.0), 2+ facets disliked (-1.0).
+    3. Qualitative Tone & Confidence (30% Weight): 
+       - Positive (+1.0): "Amazing", "Loved it", "Really enjoyed it", "Better than expected", "I was good throughout", "Like something clicked", "More confident", "Yes — definitely moments", "Can't wait", "Yeah, I'm in".
+       - Neutral (0.0): "It was okay", "Pretty good", "Some parts I liked", "Mixed", "Not sure", "Surprised me", "Glimpses of it", "We'll see".
+       - Friction/Critical (-1.0): "Didn't enjoy it", "Disappointing", "Overwhelmed", "Honestly, not that excited", "Didn't get instructions", "Didn't help me understand", "Confusing", "Too hard", "Too fast".
 
-    ## Score benchmarks
-    - 80–100% → Excellent
-    - 60–79%  → Good
-    - 40–59%  → Needs improvement
-    - 0–39%   → Critical
-
-    ## Classification guide
-    - POSITIVE: "Amazing", "Loved it", "Really enjoyed it", "Better than expected", "I was good throughout", "Like something clicked", "More confident", "Yes — there were definitely moments", "Can't wait", "Yeah, I'm in", "I enjoyed all of the facets", 4-5 stars.
-    - NEUTRAL: "It was okay", "Pretty good", "Some parts I liked", "Mixed", "Not sure", "Hard to pick", "It surprised me", "Kind of — glimpses of it", "We'll see", "Pretty much the same as before", 3 stars, 1 facet not enjoyed.
-    - NEGATIVE: "Confusing", "Too hard", "Didn't enjoy it", "Disappointing", "Overwhelmed", "Honestly, not that excited", "Not really", 1-2 stars, 2+ facets not enjoyed.
+    ## Boundary Edge Cases (Few-Shot Rules)
+    - Constructive Enthusiasm (Rating 4-5 stars, enjoyed lessons, mentions wanting extra time on one part) -> Classify as POSITIVE.
+    - Mixed Experience (Rating 3 stars, okay feedback, glimpses of making music) -> Classify as NEUTRAL.
+    - Actionable Friction (Rating 1-2 stars, OR 2+ facets disliked, OR explicit frustration/disappointment) -> Classify as CRITICAL.
+    - Negation Guard: Words like "none", "not confusing", "wasn't too hard", "no issues" MUST NOT trigger critical flags.
   `;
 
   useEffect(() => {
@@ -173,7 +268,7 @@ export default function App() {
     try {
       const prompt = `
         Analyze the following student feedback submission and provide a concise summary of their experience.
-        Use the provided Classification Guide to determine the sentiment.
+        Use the provided Classification Guide to determine the sentiment, score, and key aspects.
         
         ${CLASSIFICATION_GUIDE}
         
@@ -182,10 +277,15 @@ export default function App() {
         
         Return the result in JSON format with the following structure:
         {
-          "summary": "A 2-3 sentence summary of the student's feedback",
+          "summary": "A 2-sentence summary of the student's feedback focusing on what resonated and any constructive feedback.",
           "sentiment": "POSITIVE, NEUTRAL, or CRITICAL",
           "score": 0-100,
-          "reasoning": "Brief explanation based on the guide"
+          "reasoning": "Brief explanation citing specific triggers from the rubric",
+          "aspects": {
+            "engagement": "High, Moderate, or Low",
+            "clarity": "Clear, Paced Well, Fast, or Confusing",
+            "confidence": "Increased, Unchanged, or Frustrated"
+          }
         }
       `;
 
@@ -202,7 +302,15 @@ export default function App() {
                 summary: { type: "string" },
                 sentiment: { type: "string" },
                 score: { type: "number" },
-                reasoning: { type: "string" }
+                reasoning: { type: "string" },
+                aspects: {
+                  type: "object",
+                  properties: {
+                    engagement: { type: "string" },
+                    clarity: { type: "string" },
+                    confidence: { type: "string" }
+                  }
+                }
               },
               required: ["summary", "sentiment", "score", "reasoning"]
             }
@@ -244,13 +352,14 @@ export default function App() {
       const finalScore = typeof result.score === 'number' ? result.score / 100 : (sentiment === 'POSITIVE' ? 1 : 0);
 
       const updateSubmission = (prev: Submission) => {
-        const updated = {
+        const updated: Submission = {
           ...prev,
           sentiment: sentiment,
           sentimentScore: finalScore,
           sentimentColor: aiData.color,
           aiSummary: result.summary || 'Summary evaluated.',
           aiSentiment: sentiment,
+          aspects: result.aspects || prev.aspects,
           sentimentBasis: result.reasoning ? [result.reasoning] : prev.sentimentBasis,
           isAIEvaluated: true
         };
@@ -263,6 +372,7 @@ export default function App() {
         sentimentColor: aiData.color,
         aiSummary: result.summary || 'Summary evaluated.',
         aiSentiment: sentiment,
+        aspects: result.aspects,
         sentimentBasis: result.reasoning ? [result.reasoning] : submission.sentimentBasis,
         isAIEvaluated: true
       });
@@ -290,7 +400,7 @@ export default function App() {
         return prev;
       });
     } catch (err) {
-      console.error("AI Generation Error:", err);
+      console.error("[Frontend] AI Summary Error:", err);
     } finally {
       setAiLoading(false);
     }
@@ -562,86 +672,9 @@ export default function App() {
 
   const processSheetData = (rawData: any[], source: 'current' | 'legacy') => {
     return rawData.map((row: any, index: number) => {
-      const rowString = JSON.stringify(row).toLowerCase();
       const rating = parseInt(getFuzzyVal(row, ['Rating', 'Score', 'CSAT']) || '0') || 0;
       const rawSentiment = (getFuzzyVal(row, ['Sentiment', 'Sentiment Tag', 'Feedback Type', 'Status']) || '').toString().toUpperCase();
       
-      // Count facets not enjoyed
-      const facetsNotEnjoyed = (getFuzzyVal(row, ["Please select any facet(s) you didn't enjoy"]) || '').toString();
-      const facetsNotEnjoyedCount = facetsNotEnjoyed ? facetsNotEnjoyed.split(',').filter(Boolean).length : 0;
-
-      let sentiment = 'NEUTRAL';
-      let sentimentColor = 'text-primary bg-primary/10 ring-primary/20';
-      let sentimentScore = 0; // Default for neutral/negative
-
-      // Classification Logic based on User Guide
-      
-      // 1. NEGATIVE SIGNALS (Highest priority)
-      const isNegative = 
-        facetsNotEnjoyedCount >= 2 ||
-        rowString.includes('confusing') ||
-        rowString.includes('too hard') ||
-        rowString.includes("didn't enjoy it") ||
-        rowString.includes('disappointing') ||
-        rowString.includes('overwhelmed') ||
-        rowString.includes('honestly, not that excited') ||
-        rowString.includes('not really') ||
-        rowString.includes('too fast') ||
-        rowString.includes("didn't get the instructions") ||
-        rowString.includes('too slow') ||
-        rowString.includes("didn't help me understand") ||
-        (rating > 0 && rating <= 2) ||
-        rawSentiment.includes('NEGATIVE') || 
-        rawSentiment.includes('CRITICAL');
-
-      // 2. POSITIVE SIGNALS
-      const isPositive = 
-        rowString.includes('amazing') ||
-        rowString.includes('loved it') ||
-        rowString.includes('really enjoyed it') ||
-        rowString.includes('better than expected') ||
-        rowString.includes('i was good throughout') ||
-        rowString.includes('like something clicked') ||
-        rowString.includes('more confident') ||
-        rowString.includes('yes — there were definitely moments') ||
-        rowString.includes("can't wait") ||
-        rowString.includes("yeah, i'm in") ||
-        rowString.includes('i enjoyed all of the facets') ||
-        rowString.includes('engaging and fun') ||
-        rowString.includes('really helpful') ||
-        rowString.includes('my favourite part') ||
-        (rating >= 4) ||
-        rawSentiment.includes('POSITIVE');
-
-      // 3. NEUTRAL SIGNALS
-      const isNeutralExplicit = 
-        facetsNotEnjoyedCount === 1 ||
-        rowString.includes('it was okay') ||
-        rowString.includes('pretty good') ||
-        rowString.includes('some parts i liked') ||
-        rowString.includes('mixed') ||
-        rowString.includes('not sure') ||
-        rowString.includes('hard to pick') ||
-        rowString.includes('it surprised me') ||
-        rowString.includes('kind of — glimpses of it') ||
-        rowString.includes("we'll see") ||
-        rowString.includes('pretty much the same as before') ||
-        (rating === 3);
-
-      if (isNegative) {
-        sentiment = 'CRITICAL';
-        sentimentColor = 'text-tertiary-container bg-tertiary-container/10 ring-tertiary-container/20';
-        sentimentScore = 0; // Negative doesn't count toward score
-      } else if (isPositive) {
-        sentiment = 'POSITIVE';
-        sentimentColor = 'text-secondary-fixed bg-secondary-fixed/10 ring-secondary-fixed/20';
-        sentimentScore = 1; // Only positive counts
-      } else if (isNeutralExplicit) {
-        sentiment = 'NEUTRAL';
-        sentimentColor = 'text-primary bg-primary/10 ring-primary/20';
-        sentimentScore = 0; // Neutral doesn't count toward score
-      }
-
       const reservedKeys = [
         '_sheetCategory', 'rawData', 'id', 'refId', 'isReviewed', 'aiSentiment', 'aiSummary', 'isAIEvaluated',
         'timestamp', 'school', 'customer', 'type', 'coursename', 'course name', 'sentiment', 'sentiment tag',
@@ -651,33 +684,117 @@ export default function App() {
         !reservedKeys.some(r => key.toLowerCase().replace(/[^a-z0-9]/g, '') === r.toLowerCase().replace(/[^a-z0-9]/g, ''))
       );
 
-      const sentimentBasis: string[] = [];
-      if (facetsNotEnjoyedCount >= 2) sentimentBasis.push(`the student reported ${facetsNotEnjoyedCount} facets not enjoyed (Threshold: 2+)`);
-      if (rowString.includes('confusing')) sentimentBasis.push('the feedback mentioned feeling "Confusing"');
-      if (rowString.includes('too hard')) sentimentBasis.push('the student reported content was "Too hard"');
-      if (rowString.includes('overwhelmed')) sentimentBasis.push('the student mentioned feeling "Overwhelmed"');
-      if (rowString.includes('honestly, not that excited')) sentimentBasis.push('the student expressed lack of excitement for future content');
-      if (rowString.includes('not really')) sentimentBasis.push('the student reported "Not really" regarding music-making');
-      if (rating > 0 && rating <= 2) sentimentBasis.push(`a low rating of ${rating} stars was provided`);
-      
-      if (rowString.includes('amazing') || rowString.includes('loved it')) sentimentBasis.push('the student expressed high enthusiasm (Amazing/Loved it)');
-      if (rowString.includes('i was good throughout')) sentimentBasis.push('the student reported no frustration throughout the unit');
-      if (rowString.includes('yes — there were definitely moments')) sentimentBasis.push('the student confirmed positive music-making moments');
-      if (rowString.includes("can't wait") || rowString.includes("yeah, i'm in")) sentimentBasis.push('the student showed high excitement for upcoming content');
-      if (rowString.includes('i enjoyed all of the facets')) sentimentBasis.push('the student explicitly enjoyed all facets');
-      if (rating >= 4) sentimentBasis.push(`a high rating of ${rating} stars was provided`);
+      // Extract only student response values to avoid false matching on question headers
+      const answersOnly = questions.map(q => String(row[q] || '')).join(' ').toLowerCase();
 
-      if (facetsNotEnjoyedCount === 1) sentimentBasis.push('the student reported 1 facet not enjoyed (Neutral)');
-      if (rowString.includes('it was okay') || rowString.includes('pretty good')) sentimentBasis.push('the feedback was neutral/moderate (Okay/Pretty good)');
-      if (rowString.includes('kind of — glimpses of it')) sentimentBasis.push('the student reported "glimpses" of music-making (Neutral)');
-      if (rowString.includes("we'll see")) sentimentBasis.push('the student was neutral/undecided about future content');
-      if (rating === 3) sentimentBasis.push('a moderate rating of 3 stars was provided');
+      // Count facets not enjoyed specifically from the answer
+      const facetsRaw = (getFuzzyVal(row, ["Please select any facet(s) you didn't enjoy"]) || '').toString().trim();
+      const isNoneFacet = !facetsRaw || 
+                          facetsRaw.toLowerCase() === 'none' || 
+                          facetsRaw.toLowerCase() === 'n/a' || 
+                          facetsRaw.toLowerCase().includes('enjoyed all');
+      const facetsNotEnjoyedCount = isNoneFacet ? 0 : facetsRaw.split(',').map(s => s.trim()).filter(Boolean).length;
+
+      // 1. Rating factor (40% weight)
+      let ratingWeight = 0.0;
+      if (rating === 5) ratingWeight = 1.0;
+      else if (rating === 4) ratingWeight = 0.75;
+      else if (rating === 3) ratingWeight = 0.0;
+      else if (rating === 2) ratingWeight = -0.75;
+      else if (rating === 1) ratingWeight = -1.0;
+
+      // 2. Facets factor (30% weight)
+      let facetsWeight = isNoneFacet || facetsNotEnjoyedCount === 0 ? 1.0 : (facetsNotEnjoyedCount === 1 ? 0.0 : -1.0);
+
+      // 3. Text tone / Confidence signals (30% weight)
+      const hasExplicitNegativeWord = 
+        answersOnly.includes('didn\'t enjoy it') ||
+        answersOnly.includes('disappointing') ||
+        answersOnly.includes('overwhelmed') ||
+        answersOnly.includes('honestly, not that excited') ||
+        (answersOnly.includes('not really') && !answersOnly.includes('not really difficult') && !answersOnly.includes('not really confusing')) ||
+        answersOnly.includes('didn\'t get the instructions') ||
+        answersOnly.includes('didn\'t help me understand') ||
+        (answersOnly.includes('confusing') && !answersOnly.includes('not confusing') && !answersOnly.includes('never confusing') && !answersOnly.includes('nothing confusing') && !answersOnly.includes('no confusing')) ||
+        (answersOnly.includes('too hard') && !answersOnly.includes('not too hard') && !answersOnly.includes('wasn\'t too hard')) ||
+        (answersOnly.includes('too fast') && !answersOnly.includes('not too fast')) ||
+        (answersOnly.includes('too slow') && !answersOnly.includes('not too slow'));
+
+      const hasExplicitPositiveWord = 
+        answersOnly.includes('amazing') ||
+        answersOnly.includes('loved it') ||
+        answersOnly.includes('really enjoyed') ||
+        answersOnly.includes('better than expected') ||
+        answersOnly.includes('i was good throughout') ||
+        answersOnly.includes('like something clicked') ||
+        answersOnly.includes('more confident') ||
+        answersOnly.includes('yes — there were definitely moments') ||
+        answersOnly.includes("can't wait") ||
+        answersOnly.includes("yeah, i'm in") ||
+        answersOnly.includes('i enjoyed all of the facets') ||
+        answersOnly.includes('engaging and fun') ||
+        answersOnly.includes('really helpful') ||
+        answersOnly.includes('my favourite part') ||
+        answersOnly.includes('brilliant') ||
+        answersOnly.includes('great');
+
+      let textWeight = 0.0;
+      if (hasExplicitPositiveWord && !hasExplicitNegativeWord) textWeight = 1.0;
+      else if (hasExplicitNegativeWord) textWeight = -1.0;
+
+      // Weighted Composite Score:
+      const composite = (0.40 * ratingWeight) + (0.30 * facetsWeight) + (0.30 * textWeight);
+
+      let sentiment = 'NEUTRAL';
+      let sentimentColor = 'text-primary bg-primary/10 ring-primary/20';
+      let sentimentScore = 0; // Default for neutral/negative
+
+      if (rawSentiment.includes('POSITIVE') || (composite >= 0.35 && !hasExplicitNegativeWord) || (rating >= 4 && !hasExplicitNegativeWord && facetsNotEnjoyedCount < 2)) {
+        sentiment = 'POSITIVE';
+        sentimentColor = 'text-secondary-fixed bg-secondary-fixed/10 ring-secondary-fixed/20';
+        sentimentScore = 1;
+      } else if (rawSentiment.includes('NEGATIVE') || rawSentiment.includes('CRITICAL') || composite <= -0.20 || facetsNotEnjoyedCount >= 2 || (rating > 0 && rating <= 2)) {
+        sentiment = 'CRITICAL';
+        sentimentColor = 'text-tertiary-container bg-tertiary-container/10 ring-tertiary-container/20';
+        sentimentScore = 0;
+      } else {
+        sentiment = 'NEUTRAL';
+        sentimentColor = 'text-primary bg-primary/10 ring-primary/20';
+        sentimentScore = 0;
+      }
+
+      // Aspect Dimensions
+      const aspects = {
+        engagement: (sentiment === 'POSITIVE' || hasExplicitPositiveWord) ? 'High' : (sentiment === 'CRITICAL' ? 'Low' : 'Moderate'),
+        clarity: answersOnly.includes('confusing') ? 'Confusing' : (answersOnly.includes('too fast') ? 'Fast' : 'Clear / Paced Well'),
+        confidence: (answersOnly.includes('more confident') || answersOnly.includes('clicked') || answersOnly.includes('actually making music')) ? 'Increased' : (answersOnly.includes('frustrated') || answersOnly.includes('lost') ? 'Frustrated' : 'Unchanged')
+      };
+
+      const sentimentBasis: string[] = [];
+      if (facetsNotEnjoyedCount >= 2) sentimentBasis.push(`Reported ${facetsNotEnjoyedCount} facets not enjoyed (Threshold: 2+)`);
+      else if (facetsNotEnjoyedCount === 1) sentimentBasis.push(`Reported 1 facet not enjoyed (Moderate/Constructive)`);
+      else if (isNoneFacet) sentimentBasis.push(`Enjoyed all facets / No friction reported`);
+
+      if (rating > 0 && rating <= 2) sentimentBasis.push(`Low rating of ${rating} stars provided`);
+      else if (rating >= 4) sentimentBasis.push(`High rating of ${rating} stars provided`);
+      else if (rating === 3) sentimentBasis.push(`Moderate rating of 3 stars provided`);
+
+      if (hasExplicitNegativeWord && sentiment === 'CRITICAL') sentimentBasis.push('Student reported friction or pacing difficulty');
+      if (answersOnly.includes('amazing') || answersOnly.includes('loved it')) sentimentBasis.push('Student expressed high enthusiasm (Amazing/Loved it)');
+      if (answersOnly.includes('really enjoyed') || answersOnly.includes('more confident')) sentimentBasis.push('Student reported increased confidence & enjoyment');
+      if (answersOnly.includes('i was good throughout')) sentimentBasis.push('Student reported smooth learning with no frustration');
+      if (answersOnly.includes('yes — there were definitely moments')) sentimentBasis.push('Student confirmed positive music-making moments');
+      if (answersOnly.includes("can't wait") || answersOnly.includes("yeah, i'm in")) sentimentBasis.push('Student showed high excitement for upcoming content');
+
+      if (sentimentBasis.length === 0) {
+        sentimentBasis.push(sentiment === 'POSITIVE' ? 'High overall student satisfaction' : 'Standard feedback submission');
+      }
 
       // Guarantee unique ID generation per submission log by always including index
       const sheetId = getFuzzyVal(row, ['Submission ID', 'ID', 'Ref']);
       const processedId = `${source}-idx-${index}${sheetId ? `-${sheetId}` : ''}`;
       
-      // Check if this row already contains AI data from the sheet (if we were to read it back)
+      // Check if this row already contains AI data from the sheet
       const existingAISentiment = getFuzzyVal(row, ['AI Sentiment', 'Sentiment Label', 'AI Tag']);
       const existingAISummary = getFuzzyVal(row, ['AI Summary', 'Summary']);
 
@@ -702,6 +819,7 @@ export default function App() {
            existingAISentiment === 'CRITICAL' ? 'text-tertiary-container bg-tertiary-container/10 ring-tertiary-container/20' : 
            'text-primary bg-primary/10 ring-primary/20') : sentimentColor,
         sentimentBasis: existingAISummary ? [existingAISummary] : sentimentBasis,
+        aspects,
         answers: questions.map(q => ({ question: q, answer: row[q] || 'No answer provided' })),
         rawData: row,
         aiSentiment: existingAISentiment,
@@ -848,13 +966,41 @@ export default function App() {
   }, []);
 
   const filteredSubmissions = useMemo(() => {
-    return submissions.filter(s => 
+    let items = submissions.filter(s => 
       s.customer.toLowerCase().includes(searchTerm.toLowerCase()) ||
       s.school.toLowerCase().includes(searchTerm.toLowerCase()) ||
       s.id.toLowerCase().includes(searchTerm.toLowerCase()) ||
       s.courseName.toLowerCase().includes(searchTerm.toLowerCase())
     );
-  }, [submissions, searchTerm]);
+
+    // Apply Date Range Filter if active
+    if (dateRangeFilter !== 'all') {
+      const now = Date.now();
+      const dayMs = 24 * 60 * 60 * 1000;
+      let cutoff = 0;
+      if (dateRangeFilter === '7days') cutoff = now - 7 * dayMs;
+      else if (dateRangeFilter === '30days') cutoff = now - 30 * dayMs;
+      else if (dateRangeFilter === '90days') cutoff = now - 90 * dayMs;
+      else if (dateRangeFilter === 'thisYear') cutoff = new Date(new Date().getFullYear(), 0, 1).getTime();
+
+      if (cutoff > 0) {
+        items = items.filter(s => {
+          const time = parseSubmissionDate(s.timestamp);
+          return time === 0 || time >= cutoff;
+        });
+      }
+    }
+
+    // Sort by submission date (latest first by default)
+    return [...items].sort((a, b) => {
+      const timeA = parseSubmissionDate(a.timestamp);
+      const timeB = parseSubmissionDate(b.timestamp);
+      if (timeA === 0 && timeB === 0) return 0;
+      if (timeA === 0) return 1;
+      if (timeB === 0) return -1;
+      return dateSortOrder === 'newest' ? timeB - timeA : timeA - timeB;
+    });
+  }, [submissions, searchTerm, dateSortOrder, dateRangeFilter]);
 
   const filteredLegacySubmissions = useMemo(() => {
     let items = legacySubmissions;
@@ -878,8 +1024,35 @@ export default function App() {
         s.courseName.toLowerCase().includes(searchTerm.toLowerCase())
       );
     }
-    return items;
-  }, [legacySubmissions, legacySubFilter, searchTerm]);
+
+    // Apply Date Range Filter if active
+    if (dateRangeFilter !== 'all') {
+      const now = Date.now();
+      const dayMs = 24 * 60 * 60 * 1000;
+      let cutoff = 0;
+      if (dateRangeFilter === '7days') cutoff = now - 7 * dayMs;
+      else if (dateRangeFilter === '30days') cutoff = now - 30 * dayMs;
+      else if (dateRangeFilter === '90days') cutoff = now - 90 * dayMs;
+      else if (dateRangeFilter === 'thisYear') cutoff = new Date(new Date().getFullYear(), 0, 1).getTime();
+
+      if (cutoff > 0) {
+        items = items.filter(s => {
+          const time = parseSubmissionDate(s.timestamp);
+          return time === 0 || time >= cutoff;
+        });
+      }
+    }
+
+    // Sort by submission date (latest first by default)
+    return [...items].sort((a, b) => {
+      const timeA = parseSubmissionDate(a.timestamp);
+      const timeB = parseSubmissionDate(b.timestamp);
+      if (timeA === 0 && timeB === 0) return 0;
+      if (timeA === 0) return 1;
+      if (timeB === 0) return -1;
+      return dateSortOrder === 'newest' ? timeB - timeA : timeA - timeB;
+    });
+  }, [legacySubmissions, legacySubFilter, searchTerm, dateSortOrder, dateRangeFilter]);
 
   const activeLegacyStats = useMemo(() => {
     return calculateStats(filteredLegacySubmissions);
@@ -1035,9 +1208,122 @@ export default function App() {
             </nav>
 
             <div className="flex items-center gap-4">
-              <div className="flex items-center gap-2 bg-surface-container-low px-4 py-2 rounded-lg border border-outline-variant/10 cursor-pointer hover:bg-surface-container transition-colors">
-                <Calendar size={14} className="text-on-surface-variant" />
-                <span className="text-xs font-headline font-bold text-on-surface-variant uppercase">Last 30 Days</span>
+              <button 
+                onClick={() => setIsGuideModalOpen(true)}
+                className="flex items-center gap-2 bg-surface-container-low px-4 py-2 rounded-lg border border-outline-variant/10 text-on-surface-variant hover:text-primary hover:border-primary/40 hover:bg-surface-container transition-all cursor-pointer text-xs font-headline font-bold uppercase tracking-wider"
+                title="View CSAT & Sentiment Classification Rubric"
+              >
+                <BookOpen size={14} className="text-primary" />
+                <span>Classification Guide</span>
+              </button>
+              {/* Date Scope & Sort Filter Dropdown */}
+              <div className="relative" ref={dateDropdownRef}>
+                <button 
+                  onClick={() => setIsDateDropdownOpen(prev => !prev)}
+                  className={`flex items-center gap-2 px-3 py-2 rounded-lg border text-xs font-headline font-bold uppercase transition-all cursor-pointer ${
+                    dateRangeFilter !== 'all' || dateSortOrder === 'oldest'
+                      ? 'bg-primary/10 border-primary/40 text-primary shadow-sm'
+                      : 'bg-surface-container-low border-outline-variant/10 text-on-surface-variant hover:text-on-surface hover:bg-surface-container'
+                  }`}
+                  title="Filter and Sort by Submission Date"
+                >
+                  <Calendar size={14} className={dateRangeFilter !== 'all' || dateSortOrder === 'oldest' ? 'text-primary' : 'text-on-surface-variant'} />
+                  <span>
+                    {dateRangeFilter === 'all' ? 'All Time' :
+                     dateRangeFilter === '7days' ? 'Last 7 Days' :
+                     dateRangeFilter === '30days' ? 'Last 30 Days' :
+                     dateRangeFilter === '90days' ? 'Last 90 Days' : 'This Year'}
+                  </span>
+                  <span className="text-[10px] opacity-70 px-1.5 py-0.5 rounded bg-surface-container-high">
+                    {dateSortOrder === 'newest' ? 'Latest' : 'Oldest'}
+                  </span>
+                  <ChevronDown size={12} className={`transition-transform duration-200 ${isDateDropdownOpen ? 'rotate-180' : ''}`} />
+                </button>
+
+                <AnimatePresence>
+                  {isDateDropdownOpen && (
+                    <motion.div
+                      initial={{ opacity: 0, y: 8, scale: 0.96 }}
+                      animate={{ opacity: 1, y: 0, scale: 1 }}
+                      exit={{ opacity: 0, y: 8, scale: 0.96 }}
+                      transition={{ duration: 0.15 }}
+                      className="absolute right-0 mt-2 w-72 p-4 rounded-2xl bg-surface-container-highest/95 backdrop-blur-2xl border border-outline-variant/20 shadow-2xl z-50 space-y-4"
+                    >
+                      {/* Sort Direction */}
+                      <div>
+                        <p className="text-[10px] font-black uppercase tracking-widest text-primary mb-2 flex items-center gap-1.5">
+                          <ArrowUpDown size={11} />
+                          <span>Sort Order</span>
+                        </p>
+                        <div className="grid grid-cols-2 gap-2">
+                          <button
+                            onClick={() => {
+                              setDateSortOrder('newest');
+                              setIsDateDropdownOpen(false);
+                            }}
+                            className={`flex flex-col items-center justify-center p-2.5 rounded-xl border text-xs font-bold transition-all ${
+                              dateSortOrder === 'newest'
+                                ? 'bg-primary text-on-primary border-primary shadow-md'
+                                : 'bg-surface-container/60 border-outline-variant/10 text-on-surface-variant hover:bg-surface-container hover:text-on-surface'
+                            }`}
+                          >
+                            <ArrowDown size={14} className="mb-1" />
+                            <span>Latest First</span>
+                            <span className="text-[9px] opacity-70 font-normal">Newest &rarr; Old</span>
+                          </button>
+                          <button
+                            onClick={() => {
+                              setDateSortOrder('oldest');
+                              setIsDateDropdownOpen(false);
+                            }}
+                            className={`flex flex-col items-center justify-center p-2.5 rounded-xl border text-xs font-bold transition-all ${
+                              dateSortOrder === 'oldest'
+                                ? 'bg-primary text-on-primary border-primary shadow-md'
+                                : 'bg-surface-container/60 border-outline-variant/10 text-on-surface-variant hover:bg-surface-container hover:text-on-surface'
+                            }`}
+                          >
+                            <ArrowUp size={14} className="mb-1" />
+                            <span>Oldest First</span>
+                            <span className="text-[9px] opacity-70 font-normal">Old &rarr; Newest</span>
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* Date Range Scope */}
+                      <div className="border-t border-outline-variant/10 pt-3">
+                        <p className="text-[10px] font-black uppercase tracking-widest text-on-surface-variant mb-2 flex items-center gap-1.5">
+                          <Filter size={11} />
+                          <span>Date Range Filter</span>
+                        </p>
+                        <div className="space-y-1">
+                          {[
+                            { id: 'all', label: 'All Time (Full Archive)' },
+                            { id: '7days', label: 'Last 7 Days' },
+                            { id: '30days', label: 'Last 30 Days' },
+                            { id: '90days', label: 'Last 90 Days' },
+                            { id: 'thisYear', label: 'This Year (2026)' },
+                          ].map((item) => (
+                            <button
+                              key={item.id}
+                              onClick={() => {
+                                setDateRangeFilter(item.id as any);
+                                setIsDateDropdownOpen(false);
+                              }}
+                              className={`w-full flex items-center justify-between px-3 py-2 rounded-xl text-xs font-bold transition-all ${
+                                dateRangeFilter === item.id
+                                  ? 'bg-primary/20 text-primary border border-primary/30 font-extrabold'
+                                  : 'text-on-surface-variant hover:bg-surface-container/60 hover:text-on-surface'
+                              }`}
+                            >
+                              <span>{item.label}</span>
+                              {dateRangeFilter === item.id && <Check size={14} className="text-primary" />}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    </motion.div>
+                  )}
+                </AnimatePresence>
               </div>
               <button 
                 onClick={fetchData}
@@ -1319,23 +1605,51 @@ export default function App() {
                   {/* Quick Log View */}
                   <section className="glass rounded-2xl overflow-hidden">
                     <div className="p-8 flex justify-between items-center">
-                      <h2 className="text-xl font-headline font-extrabold tracking-tight">Recent Submissions</h2>
-                      <button onClick={() => setActiveTab('Logs')} className="text-primary text-sm font-bold hover:underline">View All Logs</button>
+                      <div className="flex items-center gap-3">
+                        <h2 className="text-xl font-headline font-extrabold tracking-tight">Recent Submissions</h2>
+                        <span className="text-xs px-2.5 py-1 rounded-full bg-surface-container-high font-headline font-bold text-on-surface-variant flex items-center gap-1.5">
+                          {dateSortOrder === 'newest' ? <ArrowDown size={12} className="text-primary" /> : <ArrowUp size={12} className="text-primary" />}
+                          {dateSortOrder === 'newest' ? 'Latest First' : 'Oldest First'}
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-3">
+                        <button
+                          onClick={() => setDateSortOrder(prev => prev === 'newest' ? 'oldest' : 'newest')}
+                          className="px-3 py-1.5 rounded-lg border border-outline-variant/10 text-xs font-bold text-on-surface-variant hover:text-primary hover:bg-surface-container-low transition-all flex items-center gap-1.5"
+                          title="Toggle sort order"
+                        >
+                          <ArrowUpDown size={12} />
+                          <span>Sort: {dateSortOrder === 'newest' ? 'Newest' : 'Oldest'}</span>
+                        </button>
+                        <button onClick={() => setActiveTab('Logs')} className="text-primary text-sm font-bold hover:underline">View All Logs</button>
+                      </div>
                     </div>
                     <div className="w-full overflow-x-auto">
                       <table className="w-full text-left border-collapse">
+                        <thead>
+                          <tr className="border-b border-outline-variant/10 text-[10px] font-headline font-bold uppercase tracking-widest text-on-surface-variant/60">
+                            <th className="px-8 py-3">Student</th>
+                            <th className="px-8 py-3">School</th>
+                            <th className="px-8 py-3">Date</th>
+                            <th className="px-8 py-3">Sentiment</th>
+                            <th className="px-8 py-3 text-right">Action</th>
+                          </tr>
+                        </thead>
                         <tbody className="divide-y divide-outline-variant/5">
-                          {submissions.slice(0, 5).map((entry, i) => (
+                          {filteredSubmissions.slice(0, 6).map((entry, i) => (
                             <tr key={`${entry.id}-${i}`} className="hover:bg-surface-container-low transition-colors">
                               <td className="px-8 py-4 text-sm font-bold">{entry.customer}</td>
                               <td className="px-8 py-4 text-sm text-on-surface-variant">{entry.school}</td>
+                              <td className="px-8 py-4 text-xs font-mono text-on-surface-variant/80 whitespace-nowrap">
+                                {entry.timestamp}
+                              </td>
                               <td className="px-8 py-4">
                                 <span className={`text-[10px] font-black uppercase px-2 py-0.5 rounded ring-1 ${entry.sentimentColor}`}>
                                   {entry.sentiment}
                                 </span>
                               </td>
                               <td className="px-8 py-4 text-right">
-                                <button onClick={() => setSelectedSubmission(entry)} className="text-primary"><ChevronRight size={18} /></button>
+                                <button onClick={() => setSelectedSubmission(entry)} className="text-primary hover:opacity-80 p-1 rounded"><ChevronRight size={18} /></button>
                               </td>
                             </tr>
                           ))}
@@ -2056,6 +2370,18 @@ export default function App() {
                               </p>
                             </div>
                             <div className="flex flex-wrap items-center gap-3 w-full lg:w-auto">
+                              <button
+                                onClick={() => setDateSortOrder(prev => prev === 'newest' ? 'oldest' : 'newest')}
+                                className={`flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-bold uppercase tracking-widest border transition-all ${
+                                  dateSortOrder === 'newest'
+                                    ? 'bg-primary/10 border-primary/30 text-primary'
+                                    : 'bg-surface-container-high border-outline-variant/20 text-on-surface-variant'
+                                }`}
+                                title="Click to toggle submission date sorting"
+                              >
+                                {dateSortOrder === 'newest' ? <ArrowDown size={13} className="text-primary" /> : <ArrowUp size={13} className="text-primary" />}
+                                <span>{dateSortOrder === 'newest' ? 'Latest First' : 'Oldest First'}</span>
+                              </button>
                               <div className="relative flex-1 lg:w-64">
                                 <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-on-surface-variant" size={16} />
                                 <input 
@@ -2158,8 +2484,19 @@ export default function App() {
                                   'Engaged With Provision Independently',
                                   'Most Engaged Provision Activities'
                                 ].map((header) => (
-                                  <th key={header} className="px-6 py-4 text-[10px] font-headline font-bold uppercase tracking-widest text-on-surface-variant whitespace-nowrap">
-                                    {header}
+                                  <th 
+                                    key={header} 
+                                    onClick={header === 'Submission Date' ? () => setDateSortOrder(prev => prev === 'newest' ? 'oldest' : 'newest') : undefined}
+                                    className={`px-6 py-4 text-[10px] font-headline font-bold uppercase tracking-widest text-on-surface-variant whitespace-nowrap ${header === 'Submission Date' ? 'cursor-pointer hover:text-primary transition-colors select-none' : ''}`}
+                                  >
+                                    <div className="flex items-center gap-1.5">
+                                      <span>{header}</span>
+                                      {header === 'Submission Date' && (
+                                        <span className="text-primary">
+                                          {dateSortOrder === 'newest' ? <ArrowDown size={12} /> : <ArrowUp size={12} />}
+                                        </span>
+                                      )}
+                                    </div>
                                   </th>
                                 )) : legacySubFilter === 'instrumental' ? [
                                   'Reference',
@@ -2181,8 +2518,19 @@ export default function App() {
                                   "The interactive moments >> Helped apply knowledge",
                                   'Any other comments?'
                                 ].map((header) => (
-                                  <th key={header} className="px-6 py-4 text-[10px] font-headline font-bold uppercase tracking-widest text-on-surface-variant whitespace-nowrap">
-                                    {header}
+                                  <th 
+                                    key={header} 
+                                    onClick={header === 'Submission Date' ? () => setDateSortOrder(prev => prev === 'newest' ? 'oldest' : 'newest') : undefined}
+                                    className={`px-6 py-4 text-[10px] font-headline font-bold uppercase tracking-widest text-on-surface-variant whitespace-nowrap ${header === 'Submission Date' ? 'cursor-pointer hover:text-primary transition-colors select-none' : ''}`}
+                                  >
+                                    <div className="flex items-center gap-1.5">
+                                      <span>{header}</span>
+                                      {header === 'Submission Date' && (
+                                        <span className="text-primary">
+                                          {dateSortOrder === 'newest' ? <ArrowDown size={12} /> : <ArrowUp size={12} />}
+                                        </span>
+                                      )}
+                                    </div>
                                   </th>
                                 )) : [
                                   'Reference',
@@ -2199,8 +2547,19 @@ export default function App() {
                                   'Curriculum & Difficulty Fit',
                                   'Resources / Engagement Notes'
                                 ].map((header) => (
-                                  <th key={header} className="px-6 py-4 text-[10px] font-headline font-bold uppercase tracking-widest text-on-surface-variant whitespace-nowrap">
-                                    {header}
+                                  <th 
+                                    key={header} 
+                                    onClick={header === 'Submission Date' ? () => setDateSortOrder(prev => prev === 'newest' ? 'oldest' : 'newest') : undefined}
+                                    className={`px-6 py-4 text-[10px] font-headline font-bold uppercase tracking-widest text-on-surface-variant whitespace-nowrap ${header === 'Submission Date' ? 'cursor-pointer hover:text-primary transition-colors select-none' : ''}`}
+                                  >
+                                    <div className="flex items-center gap-1.5">
+                                      <span>{header}</span>
+                                      {header === 'Submission Date' && (
+                                        <span className="text-primary">
+                                          {dateSortOrder === 'newest' ? <ArrowDown size={12} /> : <ArrowUp size={12} />}
+                                        </span>
+                                      )}
+                                    </div>
                                   </th>
                                 ))}
                               </tr>
@@ -2363,11 +2722,24 @@ export default function App() {
                         </div>
                         <p className="text-on-surface-variant text-sm font-medium">Complete history of student feedback</p>
                       </div>
-                      <div className="flex flex-col sm:flex-row gap-4 w-full sm:w-auto">
+                      <div className="flex flex-wrap items-center gap-3 w-full sm:w-auto">
+                        <button
+                          onClick={() => setDateSortOrder(prev => prev === 'newest' ? 'oldest' : 'newest')}
+                          className={`px-4 py-2 rounded-xl text-xs font-bold uppercase tracking-widest border transition-all flex items-center gap-2 ${
+                            dateSortOrder === 'newest' 
+                              ? 'bg-primary/10 border-primary/30 text-primary' 
+                              : 'bg-surface-container-high border-outline-variant/20 text-on-surface-variant'
+                          }`}
+                          title="Click to toggle submission date sorting"
+                        >
+                          {dateSortOrder === 'newest' ? <ArrowDown size={14} className="text-primary" /> : <ArrowUp size={14} className="text-primary" />}
+                          <span>{dateSortOrder === 'newest' ? 'Latest First' : 'Oldest First'}</span>
+                        </button>
+
                         <button 
                           onClick={() => fetchData('current')}
                           disabled={loading}
-                          className="px-6 py-2.5 bg-primary/10 text-primary rounded-xl text-xs font-bold uppercase tracking-widest hover:bg-primary/20 transition-colors flex items-center gap-2 disabled:opacity-50"
+                          className="px-4 py-2 bg-primary/10 text-primary rounded-xl text-xs font-bold uppercase tracking-widest hover:bg-primary/20 transition-colors flex items-center gap-2 disabled:opacity-50"
                         >
                           <RefreshCw size={14} className={loading ? 'animate-spin' : ''} />
                           Sync Data
@@ -2389,7 +2761,7 @@ export default function App() {
                             link.click();
                             document.body.removeChild(link);
                           }}
-                          className="px-6 py-2.5 bg-surface-container-high rounded-xl text-xs font-bold uppercase tracking-widest hover:bg-surface-container transition-colors flex items-center gap-2"
+                          className="px-4 py-2 bg-surface-container-high rounded-xl text-xs font-bold uppercase tracking-widest hover:bg-surface-container transition-colors flex items-center gap-2"
                         >
                           <ExternalLink size={14} />
                           Export CSV
@@ -2401,7 +2773,7 @@ export default function App() {
                             placeholder="Search submissions..."
                             value={searchTerm}
                             onChange={(e) => setSearchTerm(e.target.value)}
-                            className="w-full bg-surface-container px-10 py-2.5 rounded-xl border border-outline-variant/10 focus:outline-none focus:ring-2 focus:ring-primary/50 text-sm transition-all"
+                            className="w-full bg-surface-container px-10 py-2 rounded-xl border border-outline-variant/10 focus:outline-none focus:ring-2 focus:ring-primary/50 text-sm transition-all"
                           />
                         </div>
                       </div>
@@ -2428,8 +2800,19 @@ export default function App() {
                               'You\'ve got 5 more playgrounds ahead — how are you feeling about that?',
                               'Anything about the unit you want us to know? Drop it here'
                             ].map((header) => (
-                              <th key={header} className="px-8 py-4 text-[10px] font-headline font-bold uppercase tracking-widest text-on-surface-variant whitespace-nowrap">
-                                {header}
+                              <th 
+                                key={header} 
+                                onClick={header === 'Submission Date' ? () => setDateSortOrder(prev => prev === 'newest' ? 'oldest' : 'newest') : undefined}
+                                className={`px-8 py-4 text-[10px] font-headline font-bold uppercase tracking-widest text-on-surface-variant whitespace-nowrap ${header === 'Submission Date' ? 'cursor-pointer hover:text-primary transition-colors select-none' : ''}`}
+                              >
+                                <div className="flex items-center gap-1.5">
+                                  <span>{header}</span>
+                                  {header === 'Submission Date' && (
+                                    <span className="text-primary">
+                                      {dateSortOrder === 'newest' ? <ArrowDown size={12} /> : <ArrowUp size={12} />}
+                                    </span>
+                                  )}
+                                </div>
                               </th>
                             ))}
                           </tr>
@@ -2737,16 +3120,60 @@ export default function App() {
                       )}
                     </div>
 
-                    <div className="p-6 bg-surface-container-low rounded-2xl border border-outline-variant/10 flex flex-col">
-                      <p className="text-xs font-headline font-bold text-on-surface-variant uppercase tracking-widest mb-4">Scoring Impact</p>
-                      <div className="flex items-baseline gap-3 mb-6">
-                        <span className={`text-5xl font-headline font-black ${selectedSubmission.sentimentScore > 0 ? 'text-secondary-fixed' : 'text-primary'}`}>
-                          {selectedSubmission.sentimentScore > 0 ? '+' : ''}{selectedSubmission.sentimentScore.toFixed(1)}
-                        </span>
-                        <span className="text-xs font-bold text-on-surface-variant uppercase tracking-widest opacity-60">Points contributed to CSAT</span>
+                    <div className="p-6 bg-surface-container-low rounded-2xl border border-outline-variant/10 flex flex-col justify-between space-y-4">
+                      <div>
+                        <div className="flex items-center justify-between mb-4">
+                          <p className="text-xs font-headline font-bold text-on-surface-variant uppercase tracking-widest">Scoring Impact</p>
+                          <button 
+                            onClick={() => setIsGuideModalOpen(true)}
+                            className="text-[10px] font-bold text-primary hover:underline flex items-center gap-1 uppercase tracking-wider"
+                          >
+                            <BookOpen size={10} />
+                            View Rubric
+                          </button>
+                        </div>
+                        <div className="flex items-baseline gap-3 mb-4">
+                          <span className={`text-5xl font-headline font-black ${selectedSubmission.sentimentScore > 0 ? 'text-secondary-fixed' : 'text-primary'}`}>
+                            {selectedSubmission.sentimentScore > 0 ? '+' : ''}{selectedSubmission.sentimentScore.toFixed(1)}
+                          </span>
+                          <span className="text-xs font-bold text-on-surface-variant uppercase tracking-widest opacity-60">Points contributed to CSAT</span>
+                        </div>
+
+                        {/* Aspect Dimensions */}
+                        {selectedSubmission.aspects && (
+                          <div className="grid grid-cols-3 gap-2 pt-3 border-t border-outline-variant/10">
+                            <div className="p-2.5 rounded-xl bg-surface-container border border-outline-variant/5">
+                              <p className="text-[9px] font-headline font-bold text-on-surface-variant uppercase tracking-widest mb-1">Engagement</p>
+                              <span className={`text-[11px] font-bold ${
+                                selectedSubmission.aspects.engagement === 'High' ? 'text-secondary-fixed' :
+                                selectedSubmission.aspects.engagement === 'Low' ? 'text-tertiary-container' : 'text-primary'
+                              }`}>
+                                {selectedSubmission.aspects.engagement || 'Moderate'}
+                              </span>
+                            </div>
+                            <div className="p-2.5 rounded-xl bg-surface-container border border-outline-variant/5">
+                              <p className="text-[9px] font-headline font-bold text-on-surface-variant uppercase tracking-widest mb-1">Clarity</p>
+                              <span className={`text-[11px] font-bold ${
+                                selectedSubmission.aspects.clarity === 'Confusing' ? 'text-tertiary-container' :
+                                selectedSubmission.aspects.clarity === 'Fast' ? 'text-primary' : 'text-secondary-fixed'
+                              }`}>
+                                {selectedSubmission.aspects.clarity || 'Clear'}
+                              </span>
+                            </div>
+                            <div className="p-2.5 rounded-xl bg-surface-container border border-outline-variant/5">
+                              <p className="text-[9px] font-headline font-bold text-on-surface-variant uppercase tracking-widest mb-1">Confidence</p>
+                              <span className={`text-[11px] font-bold ${
+                                selectedSubmission.aspects.confidence === 'Increased' ? 'text-secondary-fixed' :
+                                selectedSubmission.aspects.confidence === 'Frustrated' ? 'text-tertiary-container' : 'text-on-surface-variant'
+                              }`}>
+                                {selectedSubmission.aspects.confidence || 'Unchanged'}
+                              </span>
+                            </div>
+                          </div>
+                        )}
                       </div>
                       
-                      <div className="mt-auto pt-6 border-t border-outline-variant/10 space-y-3">
+                      <div className="pt-4 border-t border-outline-variant/10 space-y-2">
                         <p className="text-sm leading-relaxed text-on-surface-variant">
                           This submission was classified as <span className={`font-black uppercase ${selectedSubmission.sentimentColor.split(' ')[0]}`}>{selectedSubmission.sentiment}</span> because {
                             selectedSubmission.sentimentBasis && selectedSubmission.sentimentBasis.length > 0 
@@ -2755,7 +3182,7 @@ export default function App() {
                           }
                         </p>
                         <p className="text-[10px] font-bold uppercase tracking-tighter text-on-surface-variant opacity-40">
-                          Based on The Ear Academy Classification Guide
+                          Based on The Ear Academy Weighted Composite Model
                         </p>
                       </div>
                     </div>
@@ -2808,6 +3235,156 @@ export default function App() {
                 </button>
                 <button className="bg-primary text-on-primary px-6 py-2.5 rounded-xl text-sm font-headline font-bold uppercase tracking-wider hover:opacity-90 active:scale-95 transition-all shadow-lg shadow-primary/20">
                   Export PDF
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* Classification Guide & Scoring Rubric Modal */}
+      <AnimatePresence>
+        {isGuideModalOpen && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-6 bg-black/60 backdrop-blur-md">
+            <motion.div 
+              initial={{ opacity: 0, scale: 0.95, y: 20 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 20 }}
+              className="bg-surface-container-high rounded-3xl border border-outline-variant/20 w-full max-w-4xl max-h-[90vh] flex flex-col shadow-2xl overflow-hidden"
+            >
+              {/* Modal Header */}
+              <div className="p-8 border-b border-outline-variant/10 flex items-center justify-between bg-surface-container-highest/50">
+                <div className="flex items-center gap-3">
+                  <div className="p-3 rounded-2xl bg-primary/10 text-primary">
+                    <BookOpen size={24} />
+                  </div>
+                  <div>
+                    <h2 className="text-2xl font-headline font-black text-on-surface">Classification Guide & Scoring Model</h2>
+                    <p className="text-xs text-on-surface-variant font-medium">Standardized sentiment evaluation, CSAT scoring, and AI classification rubric</p>
+                  </div>
+                </div>
+                <button 
+                  onClick={() => setIsGuideModalOpen(false)}
+                  className="p-2 hover:bg-surface-container rounded-full transition-colors text-on-surface-variant hover:text-on-surface"
+                >
+                  <X size={24} />
+                </button>
+              </div>
+
+              {/* Modal Body */}
+              <div className="flex-1 overflow-y-auto p-8 space-y-8 custom-scrollbar">
+                {/* Mathematical Formula */}
+                <div className="p-6 rounded-2xl bg-surface-container-low border border-outline-variant/10 space-y-4">
+                  <div className="flex items-center gap-2 text-primary">
+                    <Sliders size={18} />
+                    <h3 className="text-sm font-headline font-bold uppercase tracking-widest">Weighted Composite Formula</h3>
+                  </div>
+                  <p className="text-sm text-on-surface-variant leading-relaxed">
+                    To eliminate single-keyword false alarms, student submissions are evaluated using a multi-factor weighted equation:
+                  </p>
+                  <div className="p-4 rounded-xl bg-surface-container font-mono text-xs text-primary border border-primary/20">
+                    Score = (0.40 × Star Rating) + (0.30 × Facet Balance) + (0.30 × Qualitative Tone & Confidence)
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-2">
+                    <div className="p-3.5 rounded-xl bg-surface-container border border-outline-variant/10">
+                      <div className="flex items-center justify-between mb-1">
+                        <span className="text-xs font-bold text-on-surface">Star Rating</span>
+                        <span className="text-xs font-black text-primary">40% Weight</span>
+                      </div>
+                      <p className="text-[11px] text-on-surface-variant">5★ (+1.0), 4★ (+0.75), 3★ (0.0), 2★ (-0.75), 1★ (-1.0)</p>
+                    </div>
+                    <div className="p-3.5 rounded-xl bg-surface-container border border-outline-variant/10">
+                      <div className="flex items-center justify-between mb-1">
+                        <span className="text-xs font-bold text-on-surface">Facet Balance</span>
+                        <span className="text-xs font-black text-primary">30% Weight</span>
+                      </div>
+                      <p className="text-[11px] text-on-surface-variant">0 / None disliked (+1.0), 1 disliked (0.0), 2+ disliked (-1.0)</p>
+                    </div>
+                    <div className="p-3.5 rounded-xl bg-surface-container border border-outline-variant/10">
+                      <div className="flex items-center justify-between mb-1">
+                        <span className="text-xs font-bold text-on-surface">Tone & Confidence</span>
+                        <span className="text-xs font-black text-primary">30% Weight</span>
+                      </div>
+                      <p className="text-[11px] text-on-surface-variant">Enthusiastic (+1.0), Neutral (0.0), Explicit Friction (-1.0)</p>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Classification Categories */}
+                <div className="space-y-4">
+                  <h3 className="text-sm font-headline font-bold uppercase tracking-widest text-on-surface-variant">Sentiment Tier Definitions</h3>
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                    {/* Positive */}
+                    <div className="p-5 rounded-2xl bg-secondary-fixed/5 border border-secondary-fixed/20 space-y-3">
+                      <div className="flex items-center gap-2 text-secondary-fixed">
+                        <CheckCircle2 size={18} />
+                        <h4 className="text-sm font-headline font-bold uppercase tracking-wider">POSITIVE (Counts to CSAT)</h4>
+                      </div>
+                      <p className="text-xs text-on-surface-variant leading-relaxed">
+                        Composite Score &ge; 0.35 OR 4-5 Star rating without friction. Cites clear enjoyment, high engagement, or increased confidence.
+                      </p>
+                      <div className="text-[11px] font-mono text-secondary-fixed space-y-1 pt-1">
+                        <div>• "Amazing", "Loved it", "Clicked"</div>
+                        <div>• "More confident", "Can't wait"</div>
+                        <div>• "I was good throughout"</div>
+                      </div>
+                    </div>
+
+                    {/* Neutral */}
+                    <div className="p-5 rounded-2xl bg-primary/5 border border-primary/20 space-y-3">
+                      <div className="flex items-center gap-2 text-primary">
+                        <Layers size={18} />
+                        <h4 className="text-sm font-headline font-bold uppercase tracking-wider">NEUTRAL (Excluded from CSAT)</h4>
+                      </div>
+                      <p className="text-xs text-on-surface-variant leading-relaxed">
+                        Composite Score between -0.19 and +0.34. Mixed experience, moderate interest, or single constructive facet comment.
+                      </p>
+                      <div className="text-[11px] font-mono text-primary space-y-1 pt-1">
+                        <div>• "It was okay", "Pretty good"</div>
+                        <div>• "Kind of — glimpses of it"</div>
+                        <div>• "We'll see", "Not sure"</div>
+                      </div>
+                    </div>
+
+                    {/* Critical */}
+                    <div className="p-5 rounded-2xl bg-tertiary-container/5 border border-tertiary-container/20 space-y-3">
+                      <div className="flex items-center gap-2 text-tertiary-container">
+                        <AlertTriangle size={18} />
+                        <h4 className="text-sm font-headline font-bold uppercase tracking-wider">CRITICAL (Action Required)</h4>
+                      </div>
+                      <p className="text-xs text-on-surface-variant leading-relaxed">
+                        Composite Score &le; -0.20 OR 1-2 Stars OR 2+ facets disliked OR explicit frustration or difficulty understanding.
+                      </p>
+                      <div className="text-[11px] font-mono text-tertiary-container space-y-1 pt-1">
+                        <div>• "Didn't enjoy it", "Overwhelmed"</div>
+                        <div>• "Confusing", "Too hard", "Too fast"</div>
+                        <div>• "Didn't get instructions"</div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Aspect Dimensions & Negation Guards */}
+                <div className="p-6 rounded-2xl bg-surface-container-low border border-outline-variant/10 space-y-3">
+                  <div className="flex items-center gap-2 text-on-surface">
+                    <ShieldAlert size={18} className="text-secondary-fixed" />
+                    <h3 className="text-sm font-headline font-bold uppercase tracking-widest">Negation Guard & Edge-Case Rules</h3>
+                  </div>
+                  <ul className="text-xs text-on-surface-variant space-y-2 list-disc list-inside leading-relaxed">
+                    <li><strong className="text-on-surface">Header Isolation:</strong> Question titles are stripped before evaluating text to avoid false positives (e.g. evaluating a student answering "None" to a question with "confusing" in the title).</li>
+                    <li><strong className="text-on-surface">Negation Handling:</strong> Phrases like "wasn't too hard", "not confusing", "no issues", and "enjoyed all facets" explicitly protect positive scores.</li>
+                    <li><strong className="text-on-surface">Constructive Enthusiasm:</strong> A student who gave high ratings and enjoyed the material but requested extra time is classified as POSITIVE with constructive clarity aspect notes.</li>
+                  </ul>
+                </div>
+              </div>
+
+              {/* Modal Footer */}
+              <div className="p-6 border-t border-outline-variant/10 bg-surface-container-highest/30 flex justify-end">
+                <button 
+                  onClick={() => setIsGuideModalOpen(false)}
+                  className="bg-primary text-on-primary px-6 py-2.5 rounded-xl text-sm font-headline font-bold uppercase tracking-wider hover:opacity-90 active:scale-95 transition-all shadow-lg shadow-primary/20"
+                >
+                  Got It
                 </button>
               </div>
             </motion.div>

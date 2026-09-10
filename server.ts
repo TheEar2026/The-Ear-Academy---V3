@@ -31,47 +31,99 @@ function getGeminiClient(): GoogleGenAI | null {
   return aiClientInstance;
 }
 
-// Fallback heuristic for individual student submission
+// Fallback heuristic for individual student submission with weighted scoring & aspects
 function generateFallbackSubmissionSummary(prompt: string) {
-  const lowercase = prompt.toLowerCase();
+  // Extract only the submission data portion if available, to avoid matching words in the classification guide
+  let dataSection = prompt;
+  if (prompt.includes("Submission Data:")) {
+    dataSection = prompt.split("Submission Data:")[1] || prompt;
+  }
+  const lowercase = dataSection.toLowerCase();
   
-  const isPositive = lowercase.includes("amazing") || 
-                     lowercase.includes("loved it") || 
-                     lowercase.includes("really enjoyed") || 
-                     lowercase.includes("better than expected") ||
-                     lowercase.includes("more confident") ||
-                     lowercase.includes("clicked") ||
-                     lowercase.includes("5 stars") ||
-                     lowercase.includes("rating: 5") ||
-                     lowercase.includes("rating: 4");
-                     
-  const isNegative = lowercase.includes("confusing") || 
-                     lowercase.includes("too hard") || 
-                     lowercase.includes("didn't enjoy") || 
-                     lowercase.includes("disappointing") || 
-                     lowercase.includes("overwhelmed") ||
-                     lowercase.includes("too fast") ||
-                     lowercase.includes("rating: 1") ||
-                     lowercase.includes("rating: 2");
+  // 1. Rating factor (40% weight)
+  let ratingFactor = 0.0;
+  if (lowercase.includes("rating: 5") || lowercase.includes("score: 5") || lowercase.includes("5 stars")) {
+    ratingFactor = 1.0;
+  } else if (lowercase.includes("rating: 4") || lowercase.includes("score: 4") || lowercase.includes("4 stars")) {
+    ratingFactor = 0.75;
+  } else if (lowercase.includes("rating: 3") || lowercase.includes("score: 3") || lowercase.includes("3 stars")) {
+    ratingFactor = 0.0;
+  } else if (lowercase.includes("rating: 2") || lowercase.includes("score: 2") || lowercase.includes("2 stars")) {
+    ratingFactor = -0.75;
+  } else if (lowercase.includes("rating: 1") || lowercase.includes("score: 1") || lowercase.includes("1 star")) {
+    ratingFactor = -1.0;
+  }
+
+  // 2. Facet balance factor (30% weight)
+  let facetFactor = 0.5; // default mild positive if clean
+  if (lowercase.includes("i enjoyed all") || lowercase.includes("none") || lowercase.includes("n/a")) {
+    facetFactor = 1.0;
+  } else if (lowercase.includes("didn't enjoy") || lowercase.includes("felt lost") || lowercase.includes("felt off")) {
+    facetFactor = -0.75;
+  }
+
+  // 3. Text tone / Confidence factor (30% weight)
+  const isPositiveTone = 
+    lowercase.includes("amazing") || 
+    lowercase.includes("loved it") || 
+    lowercase.includes("really enjoyed") || 
+    lowercase.includes("better than expected") ||
+    lowercase.includes("more confident") ||
+    lowercase.includes("clicked") ||
+    lowercase.includes("can't wait") ||
+    lowercase.includes("yeah, i'm in") ||
+    lowercase.includes("engaging") ||
+    lowercase.includes("favourite part") ||
+    lowercase.includes("i was good throughout");
+
+  const isNegativeTone = 
+    lowercase.includes("didn't enjoy it") || 
+    lowercase.includes("disappointing") || 
+    lowercase.includes("overwhelmed") || 
+    lowercase.includes("honestly, not that excited") ||
+    lowercase.includes("didn't get the instructions") ||
+    lowercase.includes("didn't help me understand");
+
+  let textFactor = 0.0;
+  if (isPositiveTone && !isNegativeTone) textFactor = 1.0;
+  else if (isNegativeTone) textFactor = -1.0;
+
+  // Composite calculation
+  const composite = (0.40 * ratingFactor) + (0.30 * facetFactor) + (0.30 * textFactor);
 
   let sentiment = "NEUTRAL";
   let score = 55;
-  let summary = "The student provided balanced feedback, noting productive elements in the session alongside areas needing pacing clarity.";
-  let reasoning = "Balanced feedback reflecting standard engagement with minor points for adjustment.";
+  let summary = "The student provided balanced feedback, noting productive elements in the session alongside areas for review.";
+  let reasoning = "Balanced feedback reflecting standard engagement.";
+  let aspects = {
+    engagement: "Moderate",
+    clarity: "Clear",
+    confidence: "Unchanged"
+  };
 
-  if (isPositive && !isNegative) {
+  if (composite >= 0.35 || (isPositiveTone && !isNegativeTone && ratingFactor >= 0)) {
     sentiment = "POSITIVE";
-    score = 92;
+    score = Math.min(100, Math.round(75 + (composite * 25)));
     summary = "The student expressed strong enthusiasm for the lesson, highlighting increased confidence and enjoyable music-making activities.";
-    reasoning = "High satisfaction markers and positive response to exercises.";
-  } else if (isNegative) {
+    reasoning = "High satisfaction markers and positive response to exercises (Weighted score: " + Math.round(composite * 100) + "%)";
+    aspects = {
+      engagement: "High",
+      clarity: "Clear",
+      confidence: "Increased"
+    };
+  } else if (composite <= -0.20 || isNegativeTone) {
     sentiment = "CRITICAL";
-    score = 28;
-    summary = "The student experienced difficulty with the lesson flow or content complexity, citing specific friction points that impacted their learning.";
-    reasoning = "Critical sentiment signals indicating frustration or excessive difficulty.";
+    score = Math.max(10, Math.round(40 + (composite * 30)));
+    summary = "The student experienced difficulty with the lesson flow or content complexity, citing specific friction points.";
+    reasoning = "Critical sentiment signals indicating frustration or difficulty (Weighted score: " + Math.round(composite * 100) + "%)";
+    aspects = {
+      engagement: "Low",
+      clarity: lowercase.includes("confusing") ? "Confusing" : "Fast",
+      confidence: "Frustrated"
+    };
   }
 
-  return { summary, sentiment, score, reasoning };
+  return { summary, sentiment, score, reasoning, aspects };
 }
 
 // Fallback heuristic for course aggregate summary
@@ -89,6 +141,47 @@ function generateFallbackCourseSummary(prompt: string) {
       "Provide tiered practice exercises for self-paced learning"
     ]
   };
+}
+
+// Helper to execute Gemini generation with multi-model fallback and retry
+async function generateContentWithRetry(
+  gemini: GoogleGenAI,
+  prompt: string,
+  config?: any
+): Promise<string | null> {
+  // Ordered models to try: primary -> fast flash alias -> lightweight flash
+  const candidateModels = ["gemini-3.8-flash", "gemini-flash-latest", "gemini-3.1-flash-lite"];
+  
+  for (const model of candidateModels) {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const response = await gemini.models.generateContent({
+          model,
+          contents: prompt,
+          config
+        });
+        if (response && response.text) {
+          return response.text;
+        }
+      } catch (err: any) {
+        const isTransient = err?.status === 'UNAVAILABLE' || 
+                            err?.status === 'RESOURCE_EXHAUSTED' || 
+                            err?.code === 503 || 
+                            err?.code === 429 ||
+                            String(err?.message || '').includes('high demand') ||
+                            String(err?.message || '').includes('503');
+                            
+        if (isTransient && attempt === 0) {
+          // Brief pause before retry
+          await new Promise((resolve) => setTimeout(resolve, 600));
+          continue; // Retry once on same model
+        }
+        // If transient failed twice or not transient, break to next candidate model
+        break;
+      }
+    }
+  }
+  return null;
 }
 
 const app = express();
@@ -276,17 +369,9 @@ app.post("/api/ai/summary", async (req, res) => {
   const gemini = getGeminiClient();
   
   if (gemini) {
-    try {
-      const result = await gemini.models.generateContent({
-        model: "gemini-3.8-flash",
-        contents: prompt,
-        config: config
-      });
-      if (result && result.text) {
-        return res.json({ text: result.text, source: "gemini" });
-      }
-    } catch (error: any) {
-      console.warn("[Server] Gemini API summary call encountered an issue, serving fallback:", error?.message || error);
+    const text = await generateContentWithRetry(gemini, prompt, config);
+    if (text) {
+      return res.json({ text, source: "gemini" });
     }
   }
 
@@ -304,17 +389,9 @@ app.post("/api/ai/course-summary", async (req, res) => {
   const gemini = getGeminiClient();
 
   if (gemini) {
-    try {
-      const result = await gemini.models.generateContent({
-        model: "gemini-3.8-flash",
-        contents: prompt,
-        config: config
-      });
-      if (result && result.text) {
-        return res.json({ text: result.text, source: "gemini" });
-      }
-    } catch (error: any) {
-      console.warn("[Server] Gemini API course summary call encountered an issue, serving fallback:", error?.message || error);
+    const text = await generateContentWithRetry(gemini, prompt, config);
+    if (text) {
+      return res.json({ text, source: "gemini" });
     }
   }
 
