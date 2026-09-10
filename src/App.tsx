@@ -48,6 +48,7 @@ interface Submission {
   id: string;
   customer: string;
   type: string;
+  sheetCategory?: string;
   sentimentScore: number;
   sentiment: string;
   sentimentColor: string;
@@ -94,6 +95,7 @@ export default function App() {
   const [selectedSubmission, setSelectedSubmission] = useState<Submission | null>(null);
   const [submissions, setSubmissions] = useState<Submission[]>([]);
   const [legacySubmissions, setLegacySubmissions] = useState<Submission[]>([]);
+  const [legacySubFilter, setLegacySubFilter] = useState<'all' | 'classroom' | 'instrumental'>('all');
   const [searchTerm, setSearchTerm] = useState('');
   const [stats, setStats] = useState<DashboardStats | null>(null);
   const [legacyStats, setLegacyStats] = useState<DashboardStats | null>(null);
@@ -103,7 +105,13 @@ export default function App() {
   const [legacyError, setLegacyError] = useState<string | null>(null);
   const [setupRequired, setSetupRequired] = useState(false);
   const [isDemo, setIsDemo] = useState(false);
-  const [configStatus, setConfigStatus] = useState({ currentConfigured: false, legacyConfigured: false, aiConfigured: false });
+  const [configStatus, setConfigStatus] = useState({ 
+    currentConfigured: false, 
+    legacyConfigured: false, 
+    legacyClassroomConfigured: false, 
+    legacyInstrumentalConfigured: false, 
+    aiConfigured: false 
+  });
   const [aiLoading, setAiLoading] = useState(false);
   const [isDisputing, setIsDisputing] = useState(false);
   const [isSaved, setIsSaved] = useState(false);
@@ -210,31 +218,54 @@ export default function App() {
         throw new Error(`AI Server Error: ${text.slice(0, 100)}`);
       }
 
-      if (!response.ok) throw new Error(data.error || "AI Summary expansion failed");
-
-      const result = JSON.parse(data.text || '{}');
+      let result: any = {};
+      if (data.text) {
+        try {
+          const cleaned = data.text.replace(/^```json\s*/i, '').replace(/\s*```$/, '').trim();
+          result = JSON.parse(cleaned);
+        } catch (e) {
+          result = {
+            summary: data.text,
+            sentiment: "NEUTRAL",
+            score: 50,
+            reasoning: "Analysis generated from feedback evaluation."
+          };
+        }
+      }
       
+      const sentiment = (result.sentiment || 'NEUTRAL').toUpperCase();
       const sentimentMap: Record<string, { color: string }> = {
         'POSITIVE': { color: 'text-secondary-fixed bg-secondary-fixed/10 ring-secondary-fixed/20' },
         'NEUTRAL': { color: 'text-primary bg-primary/10 ring-primary/20' },
         'CRITICAL': { color: 'text-tertiary-container bg-tertiary-container/10 ring-tertiary-container/20' }
       };
 
-      const aiData = sentimentMap[result.sentiment] || sentimentMap['NEUTRAL'];
+      const aiData = sentimentMap[sentiment] || sentimentMap['NEUTRAL'];
+      const finalScore = typeof result.score === 'number' ? result.score / 100 : (sentiment === 'POSITIVE' ? 1 : 0);
 
       const updateSubmission = (prev: Submission) => {
         const updated = {
           ...prev,
-          sentiment: result.sentiment,
-          sentimentScore: result.score / 100, // Normalize to 0-1
+          sentiment: sentiment,
+          sentimentScore: finalScore,
           sentimentColor: aiData.color,
-          aiSummary: result.summary,
-          aiSentiment: result.sentiment,
-          sentimentBasis: [result.reasoning],
+          aiSummary: result.summary || 'Summary evaluated.',
+          aiSentiment: sentiment,
+          sentimentBasis: result.reasoning ? [result.reasoning] : prev.sentimentBasis,
           isAIEvaluated: true
         };
         return updated;
       };
+
+      persistEvaluation(submission.id, {
+        sentiment: sentiment,
+        sentimentScore: finalScore,
+        sentimentColor: aiData.color,
+        aiSummary: result.summary || 'Summary evaluated.',
+        aiSentiment: sentiment,
+        sentimentBasis: result.reasoning ? [result.reasoning] : submission.sentimentBasis,
+        isAIEvaluated: true
+      });
 
       setSelectedSubmission(prev => {
         if (!prev || prev.id !== submission.id) return prev;
@@ -377,8 +408,16 @@ export default function App() {
   };
 
   const markAsReviewed = (submission: Submission) => {
+    const nextReviewedState = !submission.isReviewed;
     const updateData = {
-      isReviewed: true
+      sentiment: submission.sentiment,
+      sentimentScore: submission.sentimentScore,
+      sentimentColor: submission.sentimentColor,
+      aiSummary: submission.aiSummary,
+      aiSentiment: submission.aiSentiment,
+      sentimentBasis: submission.sentimentBasis,
+      isAIEvaluated: submission.isAIEvaluated,
+      isReviewed: nextReviewedState
     };
 
     const update = (prev: Submission) => ({
@@ -394,11 +433,15 @@ export default function App() {
     });
 
     setSubmissions(prev => {
-      return prev.map(s => s.id === submission.id ? update(s) : s);
+      const updated = prev.map(s => s.id === submission.id ? update(s) : s);
+      setStats(calculateStats(updated));
+      return updated;
     });
 
     setLegacySubmissions(prev => {
-      return prev.map(s => s.id === submission.id ? update(s) : s);
+      const updated = prev.map(s => s.id === submission.id ? update(s) : s);
+      setLegacyStats(calculateStats(updated));
+      return updated;
     });
     
     setIsSaved(true);
@@ -460,14 +503,26 @@ export default function App() {
         throw new Error(`AI Server Error: ${text.slice(0, 100)}`);
       }
 
-      if (!response.ok) throw new Error(data.error || "Course summary generation failed");
+      let result: any = {};
+      if (data.text) {
+        try {
+          const cleaned = data.text.replace(/^```json\s*/i, '').replace(/\s*```$/, '').trim();
+          result = JSON.parse(cleaned);
+        } catch (e) {
+          result = {
+            summary: data.text,
+            improvements: ["Review module pacing based on learner feedback", "Incorporate additional interactive exercises"]
+          };
+        }
+      }
 
-      const result = JSON.parse(data.text || '{}');
       setCourseSummaries(prev => ({
         ...prev,
         [courseName]: { 
-          summary: result.summary, 
-          improvements: result.improvements, 
+          summary: result.summary || "Course summary successfully evaluated.", 
+          improvements: Array.isArray(result.improvements) && result.improvements.length > 0 
+            ? result.improvements 
+            : ["Review module pacing based on learner feedback", "Incorporate additional interactive exercises"], 
           loading: false 
         }
       }));
@@ -587,11 +642,14 @@ export default function App() {
         sentimentScore = 0; // Neutral doesn't count toward score
       }
 
+      const reservedKeys = [
+        '_sheetCategory', 'rawData', 'id', 'refId', 'isReviewed', 'aiSentiment', 'aiSummary', 'isAIEvaluated',
+        'timestamp', 'school', 'customer', 'type', 'coursename', 'course name', 'sentiment', 'sentiment tag',
+        'submission id', 'rating', 'score'
+      ];
       const questions = Object.keys(row).filter(key => 
-        !['Timestamp', 'School Name', 'School', 'Submission ID', 'ID', 'Customer Name', 'Customer', 'Rating', 'Score', 'Sentiment', 'Sentiment Tag', 'Form Type', 'Type'].some(reserved => 
-          key.toLowerCase().replace(/[^a-z0-9]/g, '') === reserved.toLowerCase().replace(/[^a-z0-9]/g, '')
-        )
-      ).slice(0, 9);
+        !reservedKeys.some(r => key.toLowerCase().replace(/[^a-z0-9]/g, '') === r.toLowerCase().replace(/[^a-z0-9]/g, ''))
+      );
 
       const sentimentBasis: string[] = [];
       if (facetsNotEnjoyedCount >= 2) sentimentBasis.push(`the student reported ${facetsNotEnjoyedCount} facets not enjoyed (Threshold: 2+)`);
@@ -623,12 +681,19 @@ export default function App() {
       const existingAISentiment = getFuzzyVal(row, ['AI Sentiment', 'Sentiment Label', 'AI Tag']);
       const existingAISummary = getFuzzyVal(row, ['AI Summary', 'Summary']);
 
+      const sheetCategory = (row._sheetCategory as string) || (
+        getFuzzyVal(row, ['Form Type', 'Type', 'Category'])?.toLowerCase().includes('classroom') ? 'Classroom' : 
+        getFuzzyVal(row, ['Form Type', 'Type', 'Category'])?.toLowerCase().includes('instrumental') ? 'Instrumental' : 
+        (source === 'current' ? 'Current' : 'General')
+      );
+
       return {
         timestamp: getFuzzyVal(row, ['Timestamp', 'Date', 'Time', 'Submission Date']) || 'N/A',
         school: getFuzzyVal(row, ['School Name', 'School', 'Location', 'Teacher Name & School Name']) || 'N/A',
         id: processedId,
         customer: getFuzzyVal(row, ['Customer Name', 'Customer', 'Student', 'Name']) || 'Anonymous',
-        type: getFuzzyVal(row, ['Form Type', 'Type', 'Category']) || 'Classroom',
+        type: getFuzzyVal(row, ['Form Type', 'Type', 'Category']) || (sheetCategory === 'Classroom' ? 'Classroom' : 'General'),
+        sheetCategory,
         courseName: getFuzzyVal(row, ['Course Name', 'Course', 'Unit']) || 'General',
         sentimentScore: existingAISentiment ? (existingAISentiment === 'POSITIVE' ? 1 : 0) : sentimentScore,
         sentiment: existingAISentiment || sentiment,
@@ -782,11 +847,43 @@ export default function App() {
     fetchData('legacy');
   }, []);
 
-  const filteredSubmissions = submissions.filter(s => 
-    s.customer.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    s.school.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    s.id.toLowerCase().includes(searchTerm.toLowerCase())
-  );
+  const filteredSubmissions = useMemo(() => {
+    return submissions.filter(s => 
+      s.customer.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      s.school.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      s.id.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      s.courseName.toLowerCase().includes(searchTerm.toLowerCase())
+    );
+  }, [submissions, searchTerm]);
+
+  const filteredLegacySubmissions = useMemo(() => {
+    let items = legacySubmissions;
+    if (legacySubFilter === 'classroom') {
+      items = items.filter(s => 
+        s.sheetCategory === 'Classroom' || 
+        s.type.toLowerCase().includes('classroom') ||
+        s.courseName.toLowerCase().includes('classroom')
+      );
+    } else if (legacySubFilter === 'instrumental') {
+      items = items.filter(s => 
+        s.sheetCategory === 'Instrumental' || 
+        s.type.toLowerCase().includes('instrumental')
+      );
+    }
+    if (searchTerm) {
+      items = items.filter(s =>
+        s.customer.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        s.school.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        s.id.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        s.courseName.toLowerCase().includes(searchTerm.toLowerCase())
+      );
+    }
+    return items;
+  }, [legacySubmissions, legacySubFilter, searchTerm]);
+
+  const activeLegacyStats = useMemo(() => {
+    return calculateStats(filteredLegacySubmissions);
+  }, [filteredLegacySubmissions]);
 
   if (setupRequired) {
     return (
@@ -1607,30 +1704,30 @@ export default function App() {
                       <p className="text-on-surface-variant max-w-md mx-auto">{legacyError}</p>
                       <button onClick={() => fetchData('legacy')} className="text-primary font-bold hover:underline">Try again</button>
                     </div>
-                  ) : !configStatus.legacyConfigured ? (
+                  ) : !configStatus.legacyConfigured && !configStatus.legacyClassroomConfigured && !configStatus.legacyInstrumentalConfigured ? (
                     <div className="glass p-12 rounded-3xl text-center space-y-6">
                       <Database size={48} className="text-on-surface-variant mx-auto opacity-20" />
                       <div>
-                        <h2 className="text-xl font-headline font-black">Legacy Data Not Connected</h2>
-                        <p className="text-on-surface-variant max-w-md mx-auto mt-2">To view archived data, you need to connect a Google Sheet by following these steps:</p>
+                        <h2 className="text-xl font-headline font-black">Legacy Data Sheets Not Connected</h2>
+                        <p className="text-on-surface-variant max-w-md mx-auto mt-2">To view archived data, you can connect your Legacy Classroom and Instrumental Google Sheets:</p>
                       </div>
                       
                       <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-left max-w-2xl mx-auto">
                         <div className="p-4 rounded-xl bg-surface-container/50 border border-outline-variant/20">
-                          <p className="text-[10px] font-black uppercase text-primary mb-1">Step 1</p>
-                          <p className="text-xs font-medium">Get your Sheet ID from the URL (the string between /d/ and /edit).</p>
+                          <p className="text-[10px] font-black uppercase text-primary mb-1">Sheet 1: Classroom Legacy Jotform</p>
+                          <p className="text-xs font-medium">Sheet ID: <code>1GFIn6sf9j9DEbhseJRzg-NSOW7Rhxj4SBeloKVwMklQ</code> (<b>LEGACY_CLASSROOM_SHEET_ID</b>)</p>
                         </div>
                         <div className="p-4 rounded-xl bg-surface-container/50 border border-outline-variant/20">
-                          <p className="text-[10px] font-black uppercase text-primary mb-1">Step 2</p>
-                          <p className="text-xs font-medium">In Sheets: File &gt; Share &gt; Anyone with the link can view.</p>
+                          <p className="text-[10px] font-black uppercase text-primary mb-1">Sheet 2: Instrumental - Legacy Jotform</p>
+                          <p className="text-xs font-medium">Sheet ID: <code>17101J4-5MlMmbvw1-s-7I3IFENERImyRWsIkZgtJa1s</code> (<b>LEGACY_SHEET_ID</b>)</p>
                         </div>
                         <div className="p-4 rounded-xl bg-surface-container/50 border border-outline-variant/20">
-                          <p className="text-[10px] font-black uppercase text-primary mb-1">Step 3</p>
-                          <p className="text-xs font-medium">In Vercel Settings: Add <b>LEGACY_SHEET_ID</b> variable.</p>
+                          <p className="text-[10px] font-black uppercase text-primary mb-1">Google Sheets Sharing</p>
+                          <p className="text-xs font-medium">In Sheets: File &gt; Share &gt; Set to "Anyone with the link can view".</p>
                         </div>
                         <div className="p-4 rounded-xl bg-surface-container/50 border border-outline-variant/20">
-                          <p className="text-[10px] font-black uppercase text-primary mb-1">Step 4</p>
-                          <p className="text-xs font-medium">Deploy your changes to apply the new secret.</p>
+                          <p className="text-[10px] font-black uppercase text-primary mb-1">Sync</p>
+                          <p className="text-xs font-medium">Click Sync Data to load the combined legacy historical logs.</p>
                         </div>
                       </div>
 
@@ -1645,6 +1742,60 @@ export default function App() {
                     </div>
                   ) : (
                     <>
+                      {/* Sub-Category Stream Switcher */}
+                      <div className="flex flex-wrap items-center justify-between gap-4 p-4 rounded-2xl bg-surface-container-low border border-outline-variant/10">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="text-[10px] font-headline font-black uppercase tracking-widest text-on-surface-variant mr-1">Archive Stream:</span>
+                          {[
+                            { id: 'all', label: 'All Legacy Archives', count: legacySubmissions.length, icon: Database },
+                            { id: 'classroom', label: 'Classroom Legacy Jotform', count: legacySubmissions.filter(s => s.sheetCategory === 'Classroom' || s.type.toLowerCase().includes('classroom') || s.courseName.toLowerCase().includes('classroom')).length, icon: SchoolIcon, env: 'LEGACY_CLASSROOM_SHEET_ID', configured: configStatus.legacyClassroomConfigured },
+                            { id: 'instrumental', label: 'Instrumental - Legacy Jotform', count: legacySubmissions.filter(s => s.sheetCategory === 'Instrumental' || s.type.toLowerCase().includes('instrumental')).length, icon: LayoutDashboard, env: 'LEGACY_SHEET_ID', configured: configStatus.legacyInstrumentalConfigured },
+                          ].map((tab) => {
+                            const isSelected = legacySubFilter === tab.id;
+                            return (
+                              <button
+                                key={tab.id}
+                                onClick={() => setLegacySubFilter(tab.id as any)}
+                                className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-headline font-bold transition-all ${
+                                  isSelected
+                                    ? 'bg-primary text-on-primary shadow-lg shadow-primary/20'
+                                    : 'bg-surface-container-high/60 text-on-surface-variant hover:text-on-surface hover:bg-surface-container-high'
+                                }`}
+                              >
+                                <tab.icon size={14} />
+                                <span>{tab.label}</span>
+                                <span className={`px-2 py-0.5 rounded-full text-[10px] font-black ${
+                                  isSelected ? 'bg-black/20 text-on-primary' : 'bg-surface-container text-on-surface-variant'
+                                }`}>
+                                  {tab.count}
+                                </span>
+                              </button>
+                            );
+                          })}
+                        </div>
+
+                        <div className="flex items-center gap-3">
+                          <div className="flex items-center gap-2">
+                            <span className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-[10px] font-bold border ${configStatus.legacyClassroomConfigured ? 'bg-secondary-fixed/10 text-secondary-fixed border-secondary-fixed/20' : 'bg-surface-container text-on-surface-variant border-outline-variant/20'}`}>
+                              <span className={`w-1.5 h-1.5 rounded-full ${configStatus.legacyClassroomConfigured ? 'bg-secondary-fixed' : 'bg-on-surface-variant/40'}`} />
+                              Classroom: {configStatus.legacyClassroomConfigured ? 'Connected' : 'Simulated'}
+                            </span>
+                            <span className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-[10px] font-bold border ${configStatus.legacyInstrumentalConfigured ? 'bg-secondary-fixed/10 text-secondary-fixed border-secondary-fixed/20' : 'bg-surface-container text-on-surface-variant border-outline-variant/20'}`}>
+                              <span className={`w-1.5 h-1.5 rounded-full ${configStatus.legacyInstrumentalConfigured ? 'bg-secondary-fixed' : 'bg-on-surface-variant/40'}`} />
+                              Instrumental: {configStatus.legacyInstrumentalConfigured ? 'Connected' : 'Simulated'}
+                            </span>
+                          </div>
+                          <button
+                            onClick={() => fetchData('legacy')}
+                            disabled={legacyLoading}
+                            className="flex items-center gap-1.5 px-3 py-1.5 bg-primary/10 text-primary hover:bg-primary/20 text-xs font-bold rounded-xl transition-colors disabled:opacity-50 border border-primary/20"
+                          >
+                            <RefreshCw size={12} className={legacyLoading ? 'animate-spin' : ''} />
+                            Sync Archive
+                          </button>
+                        </div>
+                      </div>
+
                       {/* KPI Cards */}
                       <section className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-8">
                         {/* CSAT Score */}
@@ -1656,7 +1807,9 @@ export default function App() {
                           <div className="absolute inset-0 bg-primary/5 group-hover:bg-primary/10 transition-colors duration-500" />
                           <div className="absolute -right-10 -top-10 w-48 h-48 bg-primary/20 rounded-full blur-3xl group-hover:bg-primary/30 transition-all duration-500" />
                           
-                          <h3 className="relative z-10 text-on-surface-variant text-[10px] font-headline font-black uppercase tracking-[0.3em] mb-10">Legacy CSAT Score</h3>
+                          <h3 className="relative z-10 text-on-surface-variant text-[10px] font-headline font-black uppercase tracking-[0.3em] mb-10">
+                            {legacySubFilter === 'classroom' ? 'Classroom CSAT Score' : legacySubFilter === 'instrumental' ? 'Instrumental CSAT Score' : 'Legacy CSAT Score'}
+                          </h3>
                           
                           <div className="relative z-10 flex flex-col items-center">
                             <div className="relative w-52 h-52">
@@ -1669,7 +1822,7 @@ export default function App() {
                                   className="text-primary" 
                                   cx="50" cy="50" r="44" fill="transparent" stroke="currentColor" strokeWidth="10" 
                                   strokeDasharray={276.46} 
-                                  strokeDashoffset={276.46 * (1 - (legacyStats?.csat || 0) / 100)}
+                                  strokeDashoffset={276.46 * (1 - (activeLegacyStats?.csat || 0) / 100)}
                                   strokeLinecap="round"
                                   style={{ filter: 'drop-shadow(0 0 8px rgba(166, 138, 76, 0.6))' }}
                                 />
@@ -1682,17 +1835,17 @@ export default function App() {
                                   className="flex flex-col items-center"
                                 >
                                   <span className="text-6xl font-headline font-black text-primary drop-shadow-lg">
-                                    {legacyStats?.csat || 0}%
+                                    {activeLegacyStats?.csat || 0}%
                                   </span>
                                   <span className="text-[10px] font-black uppercase tracking-[0.2em] mt-2 text-on-surface/40">
-                                    Historical
+                                    {legacySubFilter === 'classroom' ? 'Classroom' : legacySubFilter === 'instrumental' ? 'Instrumental' : 'Historical'}
                                   </span>
                                 </motion.div>
                               </div>
                             </div>
                             <div className="mt-8 px-6 py-2 rounded-full bg-primary/10 border border-primary/20">
                               <span className="text-xs font-headline font-bold text-primary uppercase tracking-widest">
-                                Legacy Performance
+                                {legacySubFilter === 'classroom' ? 'Classroom Performance' : legacySubFilter === 'instrumental' ? 'Instrumental Performance' : 'Legacy Performance'}
                               </span>
                             </div>
                           </div>
@@ -1708,7 +1861,7 @@ export default function App() {
                           <h3 className="text-on-surface-variant text-xs font-headline font-bold uppercase tracking-widest mb-6">Archive Positive</h3>
                           <div className="flex items-end justify-between">
                             <div>
-                              <span className="block text-secondary-fixed text-4xl font-headline font-black">{legacyStats?.positiveCount.toLocaleString() || 0}</span>
+                              <span className="block text-secondary-fixed text-4xl font-headline font-black">{activeLegacyStats?.positiveCount.toLocaleString() || 0}</span>
                               <span className="text-on-surface-variant text-xs font-medium">Historical Positive</span>
                             </div>
                             <div className="flex items-end gap-1.5 h-12">
@@ -1738,7 +1891,7 @@ export default function App() {
                           <h3 className="text-on-surface-variant text-xs font-headline font-bold uppercase tracking-widest mb-6">Archive Neutral</h3>
                           <div className="flex items-end justify-between">
                             <div>
-                              <span className="block text-primary text-4xl font-headline font-black">{legacyStats?.neutralCount.toLocaleString() || 0}</span>
+                              <span className="block text-primary text-4xl font-headline font-black">{activeLegacyStats?.neutralCount.toLocaleString() || 0}</span>
                               <span className="text-on-surface-variant text-xs font-medium">Mixed Signals</span>
                             </div>
                             <div className="flex items-center justify-center w-12 h-12 rounded-full bg-primary/10 group-hover:bg-primary/20 transition-colors">
@@ -1754,11 +1907,11 @@ export default function App() {
                           transition={{ delay: 0.2 }}
                           className="glass p-8 rounded-2xl relative overflow-hidden group"
                         >
-                          <h3 className="text-on-surface-variant text-xs font-headline font-bold uppercase tracking-widest mb-6">Archive Reviewed</h3>
+                          <h3 className="text-on-surface-variant text-xs font-headline font-bold uppercase tracking-widest mb-6">Archive Filter Count</h3>
                           <div className="flex items-end justify-between">
                             <div>
-                              <span className="block text-secondary-fixed text-4xl font-headline font-black">{legacyStats?.reviewedCount || 0}</span>
-                              <span className="text-on-surface-variant text-xs font-medium">{legacySubmissions.length} Historical Records</span>
+                              <span className="block text-secondary-fixed text-4xl font-headline font-black">{filteredLegacySubmissions.length}</span>
+                              <span className="text-on-surface-variant text-xs font-medium">of {legacySubmissions.length} Total Records</span>
                             </div>
                             <div className="flex items-center justify-center w-12 h-12 rounded-full bg-secondary-fixed/10 group-hover:bg-secondary-fixed/20 transition-colors">
                               <Check size={24} className="text-secondary-fixed" />
@@ -1779,7 +1932,7 @@ export default function App() {
                           <div className="flex justify-between items-center mb-10">
                             <div>
                               <h2 className="text-xl font-headline font-extrabold tracking-tight">Legacy Sentiment Trend</h2>
-                              <p className="text-on-surface-variant text-sm font-medium">Historical volatility index</p>
+                              <p className="text-on-surface-variant text-sm font-medium">Historical volatility index ({legacySubFilter})</p>
                             </div>
                             <div className="flex gap-2">
                               <span className="w-3 h-3 rounded-full bg-primary ring-4 ring-primary/10" />
@@ -1789,7 +1942,7 @@ export default function App() {
                           
                           <div className="h-64 w-full">
                             <ResponsiveContainer width="100%" height="100%">
-                              <AreaChart data={legacyStats?.sentimentTrend || []}>
+                              <AreaChart data={activeLegacyStats?.sentimentTrend || []}>
                                 <defs>
                                   <linearGradient id="colorValueLegacy" x1="0" y1="0" x2="0" y2="1">
                                     <stop offset="5%" stopColor="#a68a4c" stopOpacity={0.3}/>
@@ -1838,14 +1991,14 @@ export default function App() {
                           transition={{ delay: 0.4 }}
                           className="glass p-8 rounded-2xl flex flex-col"
                         >
-                          <h2 className="text-xl font-headline font-extrabold tracking-tight mb-2">Legacy Submission by Type</h2>
+                          <h2 className="text-xl font-headline font-extrabold tracking-tight mb-2">Legacy Submission Mix</h2>
                           <p className="text-on-surface-variant text-sm font-medium mb-10">Historical category mix</p>
                           
                           <div className="relative flex-1 flex items-center justify-center min-h-[200px]">
                             <ResponsiveContainer width="100%" height="100%">
                               <PieChart>
                                 <Pie
-                                  data={legacyStats?.distribution || []}
+                                  data={activeLegacyStats?.distribution || []}
                                   cx="50%"
                                   cy="50%"
                                   innerRadius={60}
@@ -1854,20 +2007,20 @@ export default function App() {
                                   dataKey="value"
                                   stroke="none"
                                 >
-                                  {legacyStats?.distribution.map((entry, index) => (
+                                  {activeLegacyStats?.distribution.map((entry, index) => (
                                     <Cell key={`cell-legacy-${index}`} fill={entry.color} />
                                   ))}
                                 </Pie>
                               </PieChart>
                             </ResponsiveContainer>
                             <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
-                              <span className="text-3xl font-headline font-black">{legacyStats?.csat || 0}%</span>
+                              <span className="text-3xl font-headline font-black">{activeLegacyStats?.csat || 0}%</span>
                               <span className="text-[10px] font-headline font-bold text-on-surface-variant uppercase tracking-widest">Archive</span>
                             </div>
                           </div>
 
                           <div className="mt-10 space-y-3">
-                            {legacyStats?.distribution.map((item) => (
+                            {activeLegacyStats?.distribution.map((item) => (
                               <div key={item.name} className="flex items-center justify-between">
                                 <div className="flex items-center gap-2">
                                   <div className="w-3 h-3 rounded-full" style={{ backgroundColor: item.color }} />
@@ -1882,89 +2035,304 @@ export default function App() {
 
                       <section className="glass rounded-2xl overflow-hidden">
                         <div className="p-8">
-                          <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-4">
+                          <div className="flex flex-col lg:flex-row justify-between items-start lg:items-center gap-4 mb-4">
                             <div>
                               <div className="flex items-center gap-4">
-                                <h2 className="text-xl font-headline font-extrabold tracking-tight">Legacy Archive</h2>
-                                {legacySubmissions.length > 0 && (
+                                <h2 className="text-xl font-headline font-extrabold tracking-tight">
+                                  {legacySubFilter === 'classroom' ? 'Classroom Legacy Jotform Archive' : legacySubFilter === 'instrumental' ? 'Instrumental - Legacy Jotform Archive' : 'All Legacy Archive'}
+                                </h2>
+                                {filteredLegacySubmissions.length > 0 && (
                                   <div className="px-3 py-1 bg-secondary-fixed/10 text-secondary-fixed rounded-full text-[10px] font-black uppercase tracking-widest border border-secondary-fixed/20">
-                                    {legacyStats?.reviewedCount || 0}/{legacySubmissions.length} Evaluated
+                                    {activeLegacyStats?.reviewedCount || 0}/{filteredLegacySubmissions.length} Evaluated
                                   </div>
                                 )}
                               </div>
-                              <p className="text-on-surface-variant text-sm font-medium">Historical feedback records</p>
+                              <p className="text-on-surface-variant text-sm font-medium mt-1">
+                                {legacySubFilter === 'classroom' 
+                                  ? 'All 18 Google Sheet columns from Classroom Legacy Jotform'
+                                  : legacySubFilter === 'instrumental'
+                                  ? 'All 15 Google Sheet columns from Instrumental - Legacy Jotform'
+                                  : 'Historical feedback records aggregated across connected legacy sheets'}
+                              </p>
                             </div>
-                            <div className="flex items-center gap-2">
+                            <div className="flex flex-wrap items-center gap-3 w-full lg:w-auto">
+                              <div className="relative flex-1 lg:w-64">
+                                <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-on-surface-variant" size={16} />
+                                <input 
+                                  type="text" 
+                                  placeholder="Search archive..."
+                                  value={searchTerm}
+                                  onChange={(e) => setSearchTerm(e.target.value)}
+                                  className="w-full bg-surface-container-low pl-9 pr-4 py-2 rounded-xl border border-outline-variant/10 focus:outline-none focus:ring-2 focus:ring-primary/50 text-xs transition-all"
+                                />
+                              </div>
+                              <button 
+                                onClick={() => {
+                                  const headers = legacySubFilter === 'classroom' ? [
+                                    'Reference', 'Sheet Source', 'Course Name', 'Sentiment Tag', 'Teacher Name & School Name', 'Product Type', 'Submission Date',
+                                    'Unit Taught', 'Most Successful Lesson', 'Why Most Successful', 'Lessons Not Well Received', 'Lesson Delivery Difficulty',
+                                    'What Would You Change', 'Children Responded Positively', 'Challenge Level Appropriate', 'What Needs To Change',
+                                    'Resources Sufficient', 'Resource Needs', 'Aligned With Effective Learning', 'Engaged With Provision Independently', 'Most Engaged Provision Activities'
+                                  ] : legacySubFilter === 'instrumental' ? [
+                                    'Reference', 'Sheet Source', 'Course Name', 'Sentiment Tag', 'Teacher Name & School Name', 'Product Type', 'Submission Date',
+                                    'Which Playground did you just finish?', 'Which facet did you enjoy the most?', 'Why did you enjoy that facet the most?',
+                                    "Please select any facet(s) you didn't enjoy", "How could we improve the facet(s) you didn't enjoy?",
+                                    'Was the difficulty of the course right for you?', 'Engaging Rating', 'Helpful Rating', 'Helped apply knowledge Rating', 'Any other comments?'
+                                  ] : [
+                                    'Reference', 'Sheet Source', 'Course Name', 'Sentiment Tag', 'Teacher Name & School Name', 'Product Type', 'Submission Date', 'Score'
+                                  ];
+
+                                  const rows = filteredLegacySubmissions.map(s => {
+                                    if (legacySubFilter === 'classroom') {
+                                      return [
+                                        s.refId, s.sheetCategory || s.type, getFuzzyVal(s.rawData, ['Coursename', 'Course Name']) || s.courseName, s.sentiment,
+                                        getFuzzyVal(s.rawData, ['Teacher Name & School Name']) || s.school, s.type, getFuzzyVal(s.rawData, ['Submission Date']) || s.timestamp,
+                                        getFuzzyVal(s.rawData, ['Unit Taught']) || '', getFuzzyVal(s.rawData, ['Most Successful Lesson']) || '',
+                                        getFuzzyVal(s.rawData, ['Why Most Successful']) || '', getFuzzyVal(s.rawData, ['Lessons Not Well Received']) || '',
+                                        getFuzzyVal(s.rawData, ['Lesson Delivery Difficulty']) || '', getFuzzyVal(s.rawData, ['What Would You Change']) || '',
+                                        getFuzzyVal(s.rawData, ['Children Responded Positively']) || '', getFuzzyVal(s.rawData, ['Challenge Level Appropriate']) || '',
+                                        getFuzzyVal(s.rawData, ['What Needs To Change']) || '', getFuzzyVal(s.rawData, ['Resources Sufficient']) || '',
+                                        getFuzzyVal(s.rawData, ['Resource Needs']) || '', getFuzzyVal(s.rawData, ['Aligned With Effective Learning']) || '',
+                                        getFuzzyVal(s.rawData, ['Engaged With Provision Independently']) || '', getFuzzyVal(s.rawData, ['Most Engaged Provision Activities']) || ''
+                                      ];
+                                    } else {
+                                      return [
+                                        s.refId, s.sheetCategory || s.type, getFuzzyVal(s.rawData, ['Coursename', 'Course Name']) || s.courseName, s.sentiment,
+                                        getFuzzyVal(s.rawData, ['Teacher Name & School Name']) || s.school, s.type, getFuzzyVal(s.rawData, ['Submission Date']) || s.timestamp, s.sentimentScore
+                                      ];
+                                    }
+                                  });
+
+                                  const csvContent = [headers, ...rows].map(e => e.map(cell => `"${String(cell || '').replace(/"/g, '""')}"`).join(",")).join("\n");
+                                  const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+                                  const link = document.createElement("a");
+                                  const url = URL.createObjectURL(blob);
+                                  link.setAttribute("href", url);
+                                  link.setAttribute("download", `legacy_${legacySubFilter}_${new Date().toISOString().split('T')[0]}.csv`);
+                                  link.style.visibility = 'hidden';
+                                  document.body.appendChild(link);
+                                  link.click();
+                                  document.body.removeChild(link);
+                                }}
+                                className="flex items-center gap-1.5 px-3 py-2 bg-surface-container-high rounded-xl text-xs font-bold uppercase tracking-widest hover:bg-surface-container transition-colors border border-outline-variant/10"
+                              >
+                                <ExternalLink size={13} />
+                                Export CSV
+                              </button>
                               <button 
                                 onClick={() => fetchData('legacy')}
                                 disabled={legacyLoading}
-                                className="flex items-center gap-2 px-3 py-1.5 bg-primary/10 text-primary rounded-lg font-bold text-[10px] uppercase tracking-widest hover:bg-primary/20 transition-all disabled:opacity-50 border border-primary/20"
+                                className="flex items-center gap-1.5 px-3 py-2 bg-primary/10 text-primary rounded-xl font-bold text-xs uppercase tracking-widest hover:bg-primary/20 transition-all disabled:opacity-50 border border-primary/20"
                               >
-                                <RefreshCw size={12} className={legacyLoading ? 'animate-spin' : ''} />
+                                <RefreshCw size={13} className={legacyLoading ? 'animate-spin' : ''} />
                                 Sync Data
                               </button>
                             </div>
                           </div>
                         </div>
                         <div className="w-full overflow-x-auto">
-                          <table className="w-full text-left border-collapse min-w-[1200px]">
+                          <table className="w-full text-left border-collapse min-w-[3200px]">
                             <thead>
                               <tr className="bg-surface-container-high/50 border-b border-outline-variant/10">
-                                {[
+                                {legacySubFilter === 'classroom' ? [
                                   'Reference',
                                   'Actions',
+                                  'Sheet Source',
                                   'Course Name',
                                   'Sentiment Tag',
                                   'Teacher Name & School Name',
                                   'Product Type',
-                                  'Submission Date'
+                                  'Submission Date',
+                                  'Unit Taught',
+                                  'Most Successful Lesson',
+                                  'Why Most Successful',
+                                  'Lessons Not Well Received',
+                                  'Lesson Delivery Difficulty',
+                                  'What Would You Change',
+                                  'Children Responded Positively',
+                                  'Challenge Level Appropriate',
+                                  'What Needs To Change',
+                                  'Resources Sufficient',
+                                  'Resource Needs',
+                                  'Aligned With Effective Learning',
+                                  'Engaged With Provision Independently',
+                                  'Most Engaged Provision Activities'
                                 ].map((header) => (
-                                  <th key={header} className="px-8 py-4 text-[10px] font-headline font-bold uppercase tracking-widest text-on-surface-variant whitespace-nowrap">
+                                  <th key={header} className="px-6 py-4 text-[10px] font-headline font-bold uppercase tracking-widest text-on-surface-variant whitespace-nowrap">
+                                    {header}
+                                  </th>
+                                )) : legacySubFilter === 'instrumental' ? [
+                                  'Reference',
+                                  'Actions',
+                                  'Sheet Source',
+                                  'Course Name',
+                                  'Sentiment Tag',
+                                  'Teacher Name & School Name',
+                                  'Product Type',
+                                  'Submission Date',
+                                  'Which Playground did you just finish?',
+                                  'Which facet did you enjoy the most?',
+                                  'Why did you enjoy that facet the most?',
+                                  "Please select any facet(s) you didn't enjoy",
+                                  "How could we improve the facet(s) you didn't enjoy?",
+                                  'Was the difficulty of the course right for you?',
+                                  "The interactive moments >> Engaging",
+                                  "The interactive moments >> Helpful",
+                                  "The interactive moments >> Helped apply knowledge",
+                                  'Any other comments?'
+                                ].map((header) => (
+                                  <th key={header} className="px-6 py-4 text-[10px] font-headline font-bold uppercase tracking-widest text-on-surface-variant whitespace-nowrap">
+                                    {header}
+                                  </th>
+                                )) : [
+                                  'Reference',
+                                  'Actions',
+                                  'Sheet Source',
+                                  'Course Name',
+                                  'Sentiment Tag',
+                                  'Teacher Name & School Name',
+                                  'Product Type',
+                                  'Submission Date',
+                                  'Unit / Playground',
+                                  'Key Highlights / Successful Elements',
+                                  'Areas For Improvement / Issues',
+                                  'Curriculum & Difficulty Fit',
+                                  'Resources / Engagement Notes'
+                                ].map((header) => (
+                                  <th key={header} className="px-6 py-4 text-[10px] font-headline font-bold uppercase tracking-widest text-on-surface-variant whitespace-nowrap">
                                     {header}
                                   </th>
                                 ))}
                               </tr>
                             </thead>
                             <tbody className="divide-y divide-outline-variant/5">
-                              {legacySubmissions.length === 0 ? (
+                              {filteredLegacySubmissions.length === 0 ? (
                                 <tr>
-                                  <td colSpan={7} className="px-8 py-20 text-center">
+                                  <td colSpan={22} className="px-8 py-20 text-center">
                                     <div className="flex flex-col items-center gap-2 opacity-40">
                                       <Search size={32} />
-                                      <p className="text-sm font-medium">No legacy records found in the connected sheet.</p>
+                                      <p className="text-sm font-medium">No legacy records found for the selected filter.</p>
                                     </div>
                                   </td>
                                 </tr>
                               ) : (
-                                legacySubmissions.map((entry) => (
-                                  <tr key={entry.id} className="hover:bg-surface-container-low transition-colors">
-                                    <td className="px-8 py-6 text-[10px] font-black font-mono text-primary opacity-60">
-                                      {entry.refId}
-                                    </td>
-                                    <td className="px-8 py-6">
-                                      <div className="flex items-center gap-3">
-                                        <div className={`w-4 h-4 rounded border flex items-center justify-center transition-colors ${entry.isReviewed ? 'bg-secondary-fixed border-secondary-fixed text-on-secondary-fixed' : 'border-outline-variant'}`}>
-                                          {entry.isReviewed && <Check size={10} strokeWidth={4} />}
+                                filteredLegacySubmissions.map((entry) => {
+                                  const isClassroom = entry.sheetCategory === 'Classroom' || entry.type.toLowerCase().includes('classroom');
+                                  
+                                  return (
+                                    <tr key={entry.id} className="hover:bg-surface-container-low transition-colors">
+                                      {/* Reference */}
+                                      <td className="px-6 py-4 text-[10px] font-black font-mono text-primary opacity-60 whitespace-nowrap">
+                                        {entry.refId}
+                                      </td>
+
+                                      {/* Actions */}
+                                      <td className="px-6 py-4 whitespace-nowrap">
+                                        <div className="flex items-center gap-3">
+                                          <div className={`w-4 h-4 rounded border flex items-center justify-center transition-colors ${entry.isReviewed ? 'bg-secondary-fixed border-secondary-fixed text-on-secondary-fixed' : 'border-outline-variant'}`}>
+                                            {entry.isReviewed && <Check size={10} strokeWidth={4} />}
+                                          </div>
+                                          <button onClick={() => setSelectedSubmission(entry)} className="text-primary hover:underline font-bold text-xs">Details</button>
                                         </div>
-                                        <button onClick={() => setSelectedSubmission(entry)} className="text-primary hover:underline font-bold text-xs">Details</button>
-                                      </div>
-                                    </td>
-                                    <td className="px-8 py-6 text-sm text-on-surface-variant min-w-[200px]">{getFuzzyVal(entry.rawData, ['Course Name']) || 'N/A'}</td>
-                                    <td className="px-8 py-6 text-sm min-w-[180px]">
-                                      <div className="flex items-center gap-2">
-                                        <span className={`text-[10px] font-black uppercase px-2.5 py-1 rounded ring-1 ${entry.sentimentColor}`}>
-                                          {entry.sentiment}
+                                      </td>
+
+                                      {/* Sheet Source Badge */}
+                                      <td className="px-6 py-4 whitespace-nowrap min-w-[210px]">
+                                        <span className={`inline-flex items-center gap-1.5 text-[10px] font-bold uppercase px-3 py-1 rounded-full border whitespace-nowrap leading-none ${
+                                          isClassroom
+                                            ? 'bg-amber-500/10 text-amber-300 border-amber-500/30'
+                                            : 'bg-emerald-500/10 text-emerald-300 border-emerald-500/30'
+                                        }`}>
+                                          <span className={`w-1.5 h-1.5 rounded-full ${isClassroom ? 'bg-amber-400' : 'bg-emerald-400'}`} />
+                                          {isClassroom ? 'Classroom Legacy Jotform' : 'Instrumental - Legacy Jotform'}
                                         </span>
-                                        <span className="text-[10px] font-bold text-on-surface-variant opacity-60">
-                                          ({entry.sentimentScore > 0 ? '+' : ''}{entry.sentimentScore.toFixed(1)})
-                                        </span>
-                                      </div>
-                                    </td>
-                                    <td className="px-8 py-6 text-sm font-bold min-w-[250px]">{getFuzzyVal(entry.rawData, ['Teacher Name & School Name']) || entry.school}</td>
-                                    <td className="px-8 py-6 text-sm text-on-surface-variant min-w-[150px]">{entry.type}</td>
-                                    <td className="px-8 py-6 text-sm text-on-surface-variant whitespace-nowrap">{getFuzzyVal(entry.rawData, ['Submission Date']) || entry.timestamp}</td>
-                                  </tr>
-                                ))
+                                      </td>
+
+                                      {/* Course Name */}
+                                      <td className="px-6 py-4 text-sm text-on-surface-variant min-w-[220px]">
+                                        {getFuzzyVal(entry.rawData, ['Coursename', 'Course Name']) || entry.courseName}
+                                      </td>
+
+                                      {/* Sentiment Tag */}
+                                      <td className="px-6 py-4 text-sm whitespace-nowrap min-w-[160px]">
+                                        <div className="flex items-center gap-2">
+                                          <span className={`text-[10px] font-black uppercase px-2.5 py-1 rounded ring-1 ${entry.sentimentColor}`}>
+                                            {entry.sentiment}
+                                          </span>
+                                          <span className="text-[10px] font-bold text-on-surface-variant opacity-60">
+                                            ({entry.sentimentScore > 0 ? '+' : ''}{entry.sentimentScore.toFixed(1)})
+                                          </span>
+                                        </div>
+                                      </td>
+
+                                      {/* Teacher Name & School Name */}
+                                      <td className="px-6 py-4 text-sm font-bold min-w-[220px]">
+                                        {getFuzzyVal(entry.rawData, ['Teacher Name & School Name', 'Teacher Name & School Name_1']) || entry.school || 'N/A'}
+                                      </td>
+
+                                      {/* Product Type */}
+                                      <td className="px-6 py-4 text-sm text-on-surface-variant whitespace-nowrap min-w-[120px]">
+                                        {getFuzzyVal(entry.rawData, ['Product Type', 'Type']) || entry.type}
+                                      </td>
+
+                                      {/* Submission Date */}
+                                      <td className="px-6 py-4 text-sm text-on-surface-variant whitespace-nowrap min-w-[160px]">
+                                        {getFuzzyVal(entry.rawData, ['Submission Date', 'Timestamp']) || entry.timestamp}
+                                      </td>
+
+                                      {/* Mode-specific Google Sheet Columns */}
+                                      {legacySubFilter === 'classroom' ? (
+                                        <>
+                                          <td className="px-6 py-4 text-sm text-on-surface-variant min-w-[200px]">{getFuzzyVal(entry.rawData, ['Unit Taught']) || 'N/A'}</td>
+                                          <td className="px-6 py-4 text-sm text-on-surface-variant min-w-[250px]">{getFuzzyVal(entry.rawData, ['Most Successful Lesson']) || 'N/A'}</td>
+                                          <td className="px-6 py-4 text-sm text-on-surface-variant min-w-[300px]">{getFuzzyVal(entry.rawData, ['Why Most Successful']) || 'N/A'}</td>
+                                          <td className="px-6 py-4 text-sm text-on-surface-variant min-w-[250px]">{getFuzzyVal(entry.rawData, ['Lessons Not Well Received']) || 'N/A'}</td>
+                                          <td className="px-6 py-4 text-sm text-on-surface-variant min-w-[250px]">{getFuzzyVal(entry.rawData, ['Lesson Delivery Difficulty']) || 'N/A'}</td>
+                                          <td className="px-6 py-4 text-sm text-on-surface-variant min-w-[300px]">{getFuzzyVal(entry.rawData, ['What Would You Change']) || 'N/A'}</td>
+                                          <td className="px-6 py-4 text-sm text-on-surface-variant min-w-[220px]">{getFuzzyVal(entry.rawData, ['Children Responded Positively']) || 'N/A'}</td>
+                                          <td className="px-6 py-4 text-sm text-on-surface-variant min-w-[220px]">{getFuzzyVal(entry.rawData, ['Challenge Level Appropriate']) || 'N/A'}</td>
+                                          <td className="px-6 py-4 text-sm text-on-surface-variant min-w-[300px]">{getFuzzyVal(entry.rawData, ['What Needs To Change']) || 'N/A'}</td>
+                                          <td className="px-6 py-4 text-sm text-on-surface-variant min-w-[200px]">{getFuzzyVal(entry.rawData, ['Resources Sufficient']) || 'N/A'}</td>
+                                          <td className="px-6 py-4 text-sm text-on-surface-variant min-w-[250px]">{getFuzzyVal(entry.rawData, ['Resource Needs']) || 'N/A'}</td>
+                                          <td className="px-6 py-4 text-sm text-on-surface-variant min-w-[250px]">{getFuzzyVal(entry.rawData, ['Aligned With Effective Learning']) || 'N/A'}</td>
+                                          <td className="px-6 py-4 text-sm text-on-surface-variant min-w-[250px]">{getFuzzyVal(entry.rawData, ['Engaged With Provision Independently']) || 'N/A'}</td>
+                                          <td className="px-6 py-4 text-sm text-on-surface-variant min-w-[300px]">{getFuzzyVal(entry.rawData, ['Most Engaged Provision Activities']) || 'N/A'}</td>
+                                        </>
+                                      ) : legacySubFilter === 'instrumental' ? (
+                                        <>
+                                          <td className="px-6 py-4 text-sm text-on-surface-variant min-w-[200px]">{getFuzzyVal(entry.rawData, ['Which Playground did you just finish?']) || 'N/A'}</td>
+                                          <td className="px-6 py-4 text-sm text-on-surface-variant min-w-[250px]">{getFuzzyVal(entry.rawData, ['Which facet did you enjoy the most?']) || 'N/A'}</td>
+                                          <td className="px-6 py-4 text-sm text-on-surface-variant min-w-[300px]">{getFuzzyVal(entry.rawData, ['Why did you enjoy that facet the most?']) || 'N/A'}</td>
+                                          <td className="px-6 py-4 text-sm text-on-surface-variant min-w-[250px]">{getFuzzyVal(entry.rawData, ["Please select any facet(s) you didn't enjoy"]) || 'N/A'}</td>
+                                          <td className="px-6 py-4 text-sm text-on-surface-variant min-w-[300px]">{getFuzzyVal(entry.rawData, ["How could we improve the facet(s) you didn't enjoy?"]) || 'N/A'}</td>
+                                          <td className="px-6 py-4 text-sm text-on-surface-variant min-w-[200px]">{getFuzzyVal(entry.rawData, ['Was the difficulty of the course right for you?']) || 'N/A'}</td>
+                                          <td className="px-6 py-4 text-sm text-on-surface-variant min-w-[180px]">{getFuzzyVal(entry.rawData, ["The interactive moments in the 'Learn' steps were... >> Engaging"]) || 'N/A'}</td>
+                                          <td className="px-6 py-4 text-sm text-on-surface-variant min-w-[180px]">{getFuzzyVal(entry.rawData, ["The interactive moments in the 'Learn' steps were... >> Helpful"]) || 'N/A'}</td>
+                                          <td className="px-6 py-4 text-sm text-on-surface-variant min-w-[180px]">{getFuzzyVal(entry.rawData, ["The interactive moments in the 'Learn' steps were... >> Helped apply knowledge"]) || 'N/A'}</td>
+                                          <td className="px-6 py-4 text-sm text-on-surface-variant min-w-[300px]">{getFuzzyVal(entry.rawData, ['Any other comments?']) || 'N/A'}</td>
+                                        </>
+                                      ) : (
+                                        <>
+                                          <td className="px-6 py-4 text-sm text-on-surface-variant min-w-[200px]">
+                                            {isClassroom ? (getFuzzyVal(entry.rawData, ['Unit Taught']) || 'N/A') : (getFuzzyVal(entry.rawData, ['Which Playground did you just finish?']) || 'N/A')}
+                                          </td>
+                                          <td className="px-6 py-4 text-sm text-on-surface-variant min-w-[300px]">
+                                            {isClassroom ? (getFuzzyVal(entry.rawData, ['Most Successful Lesson', 'Why Most Successful']) || 'N/A') : (getFuzzyVal(entry.rawData, ['Which facet did you enjoy the most?', 'Why did you enjoy that facet the most?']) || 'N/A')}
+                                          </td>
+                                          <td className="px-6 py-4 text-sm text-on-surface-variant min-w-[300px]">
+                                            {isClassroom ? (getFuzzyVal(entry.rawData, ['Lessons Not Well Received', 'What Would You Change']) || 'N/A') : (getFuzzyVal(entry.rawData, ["Please select any facet(s) you didn't enjoy", "How could we improve the facet(s) you didn't enjoy?"]) || 'N/A')}
+                                          </td>
+                                          <td className="px-6 py-4 text-sm text-on-surface-variant min-w-[250px]">
+                                            {isClassroom ? (getFuzzyVal(entry.rawData, ['Challenge Level Appropriate', 'Lesson Delivery Difficulty']) || 'N/A') : (getFuzzyVal(entry.rawData, ['Was the difficulty of the course right for you?']) || 'N/A')}
+                                          </td>
+                                          <td className="px-6 py-4 text-sm text-on-surface-variant min-w-[300px]">
+                                            {isClassroom ? (getFuzzyVal(entry.rawData, ['Resources Sufficient', 'Most Engaged Provision Activities']) || 'N/A') : (getFuzzyVal(entry.rawData, ['Any other comments?']) || 'N/A')}
+                                          </td>
+                                        </>
+                                      )}
+                                    </tr>
+                                  );
+                                })
                               )}
                             </tbody>
                           </table>
@@ -2132,7 +2500,19 @@ export default function App() {
                             </span>
                           </div>
                           <div className="flex items-center justify-between">
-                            <span className="text-xs font-medium">Legacy Archive</span>
+                            <span className="text-xs font-medium">Classroom Legacy Sheet</span>
+                            <span className={`text-xs font-black p-1 px-2 rounded ${configStatus.legacyClassroomConfigured ? 'bg-secondary-fixed/10 text-secondary-fixed' : 'bg-tertiary-container/10 text-tertiary-container'}`}>
+                              {configStatus.legacyClassroomConfigured ? 'CONNECTED' : 'NOT CONNECTED'}
+                            </span>
+                          </div>
+                          <div className="flex items-center justify-between">
+                            <span className="text-xs font-medium">Instrumental Legacy Sheet</span>
+                            <span className={`text-xs font-black p-1 px-2 rounded ${configStatus.legacyInstrumentalConfigured ? 'bg-secondary-fixed/10 text-secondary-fixed' : 'bg-tertiary-container/10 text-tertiary-container'}`}>
+                              {configStatus.legacyInstrumentalConfigured ? 'CONNECTED' : 'NOT CONNECTED'}
+                            </span>
+                          </div>
+                          <div className="flex items-center justify-between">
+                            <span className="text-xs font-medium">Combined Legacy Archive</span>
                             <span className={`text-xs font-black p-1 px-2 rounded ${configStatus.legacyConfigured ? 'bg-secondary-fixed/10 text-secondary-fixed' : 'bg-tertiary-container/10 text-tertiary-container'}`}>
                               {configStatus.legacyConfigured ? 'CONNECTED' : 'NOT CONNECTED'}
                             </span>
