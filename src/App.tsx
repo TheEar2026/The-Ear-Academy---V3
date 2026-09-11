@@ -36,7 +36,9 @@ import {
   ArrowDown,
   ArrowUp,
   Filter,
-  ChevronDown
+  ChevronDown,
+  Eye,
+  EyeOff
 } from 'lucide-react';
 import { 
   AreaChart, 
@@ -142,6 +144,52 @@ const parseSubmissionDate = (dateStr: string): number => {
   return 0;
 };
 
+// Format date as concise month + day, e.g. "Sep 18"
+const formatSubmissionDate = (dateStr: string): string => {
+  if (!dateStr || dateStr === 'N/A' || dateStr === 'Unknown' || dateStr === 'Unknown Date') return 'N/A';
+  const trimmed = dateStr.trim();
+
+  // Check if it's already in a short format like "Sep 18"
+  if (/^[A-Za-z]{3}\s+\d{1,2}$/.test(trimmed)) {
+    return trimmed;
+  }
+
+  const time = parseSubmissionDate(trimmed);
+  if (time > 0) {
+    const d = new Date(time);
+    if (!isNaN(d.getTime())) {
+      return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+    }
+  }
+
+  // Fallback regex extract for "YYYY-MM-DD" or "DD/MM/YYYY" or "YYYY-MM-DD HH:mm:ss"
+  const isoMatch = trimmed.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})/);
+  if (isoMatch) {
+    const year = parseInt(isoMatch[1], 10);
+    const month = parseInt(isoMatch[2], 10) - 1;
+    const day = parseInt(isoMatch[3], 10);
+    const d = new Date(year, month, day);
+    if (!isNaN(d.getTime())) {
+      return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+    }
+  }
+
+  const dmyMatch = trimmed.match(/^(\d{1,2})[-/](\d{1,2})[-/](\d{4})/);
+  if (dmyMatch) {
+    const day = parseInt(dmyMatch[1], 10);
+    const month = parseInt(dmyMatch[2], 10) - 1;
+    const year = parseInt(dmyMatch[3], 10);
+    const d = new Date(year, month, day);
+    if (!isNaN(d.getTime())) {
+      return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+    }
+  }
+
+  // If split by space or comma, take the first date part
+  const firstPart = trimmed.split(/[\s,T]+/)[0];
+  return firstPart || trimmed;
+};
+
 // Logo Component
 const Logo = ({ className = "" }: { className?: string }) => (
   <div className={`flex flex-col items-center justify-center ${className}`}>
@@ -154,8 +202,36 @@ const Logo = ({ className = "" }: { className?: string }) => (
 );
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState('Overview');
+  const [hideCurrentPages, setHideCurrentPages] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem('hide_current_pages') === 'true';
+    } catch {
+      return false;
+    }
+  });
+
+  const [activeTab, setActiveTab] = useState<string>(() => {
+    try {
+      const isHidden = localStorage.getItem('hide_current_pages') === 'true';
+      return isHidden ? 'LegacySentiment' : 'Overview';
+    } catch {
+      return 'Overview';
+    }
+  });
   const [selectedSubmission, setSelectedSubmission] = useState<Submission | null>(null);
+
+  const toggleHideCurrentPages = () => {
+    const nextVal = !hideCurrentPages;
+    setHideCurrentPages(nextVal);
+    try {
+      localStorage.setItem('hide_current_pages', String(nextVal));
+    } catch (e) {
+      console.error('Failed to save hide_current_pages to localStorage', e);
+    }
+    if (nextVal && ['Overview', 'Sentiment', 'Logs'].includes(activeTab)) {
+      setActiveTab('LegacySentiment');
+    }
+  };
   const [isGuideModalOpen, setIsGuideModalOpen] = useState(false);
   const [submissions, setSubmissions] = useState<Submission[]>([]);
   const [legacySubmissions, setLegacySubmissions] = useState<Submission[]>([]);
@@ -861,7 +937,7 @@ export default function App() {
       negativeCount: negative,
       reviewedCount: reviewed,
       sentimentTrend: processed.slice(-7).map(s => ({ 
-        name: s.timestamp.split(',')[0], 
+        name: formatSubmissionDate(s.timestamp), 
         value: Math.round(s.sentimentScore * 100) 
       })),
       distribution: [
@@ -1058,6 +1134,45 @@ export default function App() {
     return calculateStats(filteredLegacySubmissions);
   }, [filteredLegacySubmissions]);
 
+  const groupedLegacySubmissions = useMemo(() => {
+    const groups: Record<string, Submission[]> = {};
+    filteredLegacySubmissions.forEach(s => {
+      const time = parseSubmissionDate(s.timestamp);
+      const date = time > 0 ? new Date(time) : new Date(s.timestamp);
+      const monthKey = isNaN(date.getTime()) 
+        ? 'Unknown Date' 
+        : date.toLocaleString('default', { month: 'long', year: 'numeric' });
+      
+      if (!groups[monthKey]) groups[monthKey] = [];
+      groups[monthKey].push(s);
+    });
+    
+    // Sort submissions inside each month based on dateSortOrder
+    Object.keys(groups).forEach(key => {
+      groups[key].sort((a, b) => {
+        const timeA = parseSubmissionDate(a.timestamp);
+        const timeB = parseSubmissionDate(b.timestamp);
+        if (timeA === 0 && timeB === 0) return 0;
+        if (timeA === 0) return 1;
+        if (timeB === 0) return -1;
+        return dateSortOrder === 'newest' ? timeB - timeA : timeA - timeB;
+      });
+    });
+
+    return Object.keys(groups)
+      .sort((a, b) => {
+        if (a === 'Unknown Date') return 1;
+        if (b === 'Unknown Date') return -1;
+        const timeA = new Date(a).getTime();
+        const timeB = new Date(b).getTime();
+        return dateSortOrder === 'newest' ? timeB - timeA : timeA - timeB;
+      })
+      .reduce((acc, key) => {
+        acc[key] = groups[key];
+        return acc;
+      }, {} as Record<string, Submission[]>);
+  }, [filteredLegacySubmissions, dateSortOrder]);
+
   if (setupRequired) {
     return (
       <div className="min-h-screen bg-surface flex items-center justify-center p-8">
@@ -1108,14 +1223,17 @@ export default function App() {
           <Logo className="w-full" />
         </div>
         
-        <nav className="flex flex-col gap-8 flex-1">
+        <nav className="flex flex-col gap-7 flex-1">
           {[
-            { id: 'Overview', icon: LayoutDashboard, label: 'Overview' },
-            { id: 'Sentiment', icon: BarChart3, label: 'Sentiment' },
-            { id: 'Logs', icon: Database, label: 'Logs' },
-            { id: 'Legacy', icon: Clock, label: 'Legacy' },
-            { id: 'Settings', icon: Settings, label: 'Settings' },
-          ].map((item) => (
+            { id: 'Overview', icon: LayoutDashboard, label: 'Overview', isStandard: true },
+            { id: 'Sentiment', icon: BarChart3, label: 'Sentiment', isStandard: true },
+            { id: 'Logs', icon: Database, label: 'Logs', isStandard: true },
+            { id: 'Legacy', icon: Clock, label: 'Legacy Logs', isStandard: false },
+            { id: 'LegacySentiment', icon: Sparkles, label: 'Legacy Sent.', isStandard: false },
+            { id: 'Settings', icon: Settings, label: 'Settings', isStandard: false },
+          ]
+            .filter((item) => !hideCurrentPages || !item.isStandard)
+            .map((item) => (
             <button
               key={item.id}
               onClick={() => setActiveTab(item.id)}
@@ -1187,11 +1305,14 @@ export default function App() {
           <div className="flex items-center gap-8">
             <nav className="hidden md:flex items-center gap-8">
               {[
-                { id: 'Overview', label: 'Overview' },
-                { id: 'Sentiment', label: 'Sentiment Analysis' },
-                { id: 'Logs', label: 'Submission Logs' },
-                { id: 'Legacy', label: 'Legacy Data' }
-              ].map((tab) => (
+                { id: 'Overview', label: 'Overview', isStandard: true },
+                { id: 'Sentiment', label: 'Sentiment Analysis', isStandard: true },
+                { id: 'Logs', label: 'Submission Logs', isStandard: true },
+                { id: 'Legacy', label: 'Legacy Logs', isStandard: false },
+                { id: 'LegacySentiment', label: 'Legacy Sentiment', isStandard: false },
+              ]
+                .filter((tab) => !hideCurrentPages || !tab.isStandard)
+                .map((tab) => (
                 <button
                   key={tab.id}
                   onClick={() => setActiveTab(tab.id)}
@@ -1641,7 +1762,7 @@ export default function App() {
                               <td className="px-8 py-4 text-sm font-bold">{entry.customer}</td>
                               <td className="px-8 py-4 text-sm text-on-surface-variant">{entry.school}</td>
                               <td className="px-8 py-4 text-xs font-mono text-on-surface-variant/80 whitespace-nowrap">
-                                {entry.timestamp}
+                                {formatSubmissionDate(entry.timestamp)}
                               </td>
                               <td className="px-8 py-4">
                                 <span className={`text-[10px] font-black uppercase px-2 py-0.5 rounded ring-1 ${entry.sentimentColor}`}>
@@ -1734,7 +1855,7 @@ export default function App() {
                                           <p className="text-[10px] font-black uppercase tracking-widest text-primary truncate">{s.customer}</p>
                                           <p className="text-[9px] font-bold text-on-surface leading-tight line-clamp-1">{s.school}</p>
                                           <div className="flex justify-between items-center pt-1 border-t border-outline-variant/10">
-                                            <span className="text-[8px] font-medium text-on-surface-variant">{s.timestamp}</span>
+                                            <span className="text-[8px] font-medium text-on-surface-variant">{formatSubmissionDate(s.timestamp)}</span>
                                             <span className={`text-[8px] font-black uppercase ${s.sentiment === 'POSITIVE' ? 'text-secondary-fixed' : s.sentiment === 'CRITICAL' ? 'text-tertiary-container' : 'text-primary'}`}>
                                               {s.sentiment}
                                             </span>
@@ -2099,6 +2220,13 @@ export default function App() {
                               Instrumental: {configStatus.legacyInstrumentalConfigured ? 'Connected' : 'Simulated'}
                             </span>
                           </div>
+                          <button
+                            onClick={() => setActiveTab('LegacySentiment')}
+                            className="flex items-center gap-1.5 px-3 py-1.5 bg-primary text-on-primary text-xs font-bold rounded-xl shadow-lg shadow-primary/20 hover:opacity-90 transition-all"
+                          >
+                            <Sparkles size={12} />
+                            <span>Legacy Sentiment</span>
+                          </button>
                           <button
                             onClick={() => fetchData('legacy')}
                             disabled={legacyLoading}
@@ -2636,7 +2764,7 @@ export default function App() {
 
                                       {/* Submission Date */}
                                       <td className="px-6 py-4 text-sm text-on-surface-variant whitespace-nowrap min-w-[160px]">
-                                        {getFuzzyVal(entry.rawData, ['Submission Date', 'Timestamp']) || entry.timestamp}
+                                        {formatSubmissionDate(getFuzzyVal(entry.rawData, ['Submission Date', 'Timestamp']) || entry.timestamp)}
                                       </td>
 
                                       {/* Mode-specific Google Sheet Columns */}
@@ -2697,6 +2825,549 @@ export default function App() {
                           </table>
                         </div>
                       </section>
+                    </>
+                  )}
+                </motion.div>
+              )}
+
+              {activeTab === 'LegacySentiment' && (
+                <motion.div
+                  key="legacy-sentiment"
+                  initial={{ opacity: 0, y: 20 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: -20 }}
+                  className="space-y-12"
+                >
+                  {legacyLoading ? (
+                    <div className="flex flex-col items-center justify-center h-[40vh] space-y-4">
+                      <Loader2 size={48} className="text-primary animate-spin" />
+                      <p className="text-on-surface-variant font-headline font-bold">Analyzing Legacy Sentiment Archive...</p>
+                    </div>
+                  ) : legacyError ? (
+                    <div className="glass p-12 rounded-3xl text-center space-y-4 border-tertiary-container/20">
+                      <AlertTriangle size={48} className="text-tertiary-container mx-auto" />
+                      <h2 className="text-xl font-headline font-black">Legacy Sync Error</h2>
+                      <p className="text-on-surface-variant max-w-md mx-auto">{legacyError}</p>
+                      <button onClick={() => fetchData('legacy')} className="text-primary font-bold hover:underline">Try again</button>
+                    </div>
+                  ) : !configStatus.legacyConfigured && !configStatus.legacyClassroomConfigured && !configStatus.legacyInstrumentalConfigured ? (
+                    <div className="glass p-12 rounded-3xl text-center space-y-6">
+                      <Sparkles size={48} className="text-on-surface-variant mx-auto opacity-20" />
+                      <div>
+                        <h2 className="text-xl font-headline font-black">Legacy Data Sheets Not Connected</h2>
+                        <p className="text-on-surface-variant max-w-md mx-auto mt-2">To view historical sentiment intelligence, connect your Legacy Classroom and Instrumental Google Sheets:</p>
+                      </div>
+                      
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-left max-w-2xl mx-auto">
+                        <div className="p-4 rounded-xl bg-surface-container/50 border border-outline-variant/20">
+                          <p className="text-[10px] font-black uppercase text-primary mb-1">Sheet 1: Classroom Legacy Jotform</p>
+                          <p className="text-xs font-medium">Sheet ID: <code>1GFIn6sf9j9DEbhseJRzg-NSOW7Rhxj4SBeloKVwMklQ</code> (<b>LEGACY_CLASSROOM_SHEET_ID</b>)</p>
+                        </div>
+                        <div className="p-4 rounded-xl bg-surface-container/50 border border-outline-variant/20">
+                          <p className="text-[10px] font-black uppercase text-primary mb-1">Sheet 2: Instrumental - Legacy Jotform</p>
+                          <p className="text-xs font-medium">Sheet ID: <code>17101J4-5MlMmbvw1-s-7I3IFENERImyRWsIkZgtJa1s</code> (<b>LEGACY_SHEET_ID</b>)</p>
+                        </div>
+                      </div>
+
+                      <div className="pt-4">
+                        <button 
+                          onClick={() => fetchData('legacy')} 
+                          className="px-6 py-3 bg-primary text-on-primary rounded-full font-black uppercase tracking-widest text-xs hover:scale-105 transition-transform"
+                        >
+                          Check Connection
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <>
+                      {/* Sub-Category Stream Switcher & Controls */}
+                      <div className="flex flex-wrap items-center justify-between gap-4 p-4 rounded-2xl bg-surface-container-low border border-outline-variant/10">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="text-[10px] font-headline font-black uppercase tracking-widest text-on-surface-variant mr-1">Archive Stream:</span>
+                          {[
+                            { id: 'all', label: 'All Legacy Archives', count: legacySubmissions.length, icon: Database },
+                            { id: 'classroom', label: 'Classroom Legacy Jotform', count: legacySubmissions.filter(s => s.sheetCategory === 'Classroom' || s.type.toLowerCase().includes('classroom') || s.courseName.toLowerCase().includes('classroom')).length, icon: SchoolIcon },
+                            { id: 'instrumental', label: 'Instrumental - Legacy Jotform', count: legacySubmissions.filter(s => s.sheetCategory === 'Instrumental' || s.type.toLowerCase().includes('instrumental')).length, icon: LayoutDashboard },
+                          ].map((tab) => {
+                            const isSelected = legacySubFilter === tab.id;
+                            return (
+                              <button
+                                key={tab.id}
+                                onClick={() => setLegacySubFilter(tab.id as any)}
+                                className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-headline font-bold transition-all ${
+                                  isSelected
+                                    ? 'bg-primary text-on-primary shadow-lg shadow-primary/20'
+                                    : 'bg-surface-container-high/60 text-on-surface-variant hover:text-on-surface hover:bg-surface-container-high'
+                                }`}
+                              >
+                                <tab.icon size={14} />
+                                <span>{tab.label}</span>
+                                <span className={`px-2 py-0.5 rounded-full text-[10px] font-black ${
+                                  isSelected ? 'bg-black/20 text-on-primary' : 'bg-surface-container text-on-surface-variant'
+                                }`}>
+                                  {tab.count}
+                                </span>
+                              </button>
+                            );
+                          })}
+                        </div>
+
+                        <div className="flex items-center gap-3">
+                          <button
+                            onClick={() => setActiveTab('Legacy')}
+                            className="flex items-center gap-1.5 px-3 py-1.5 bg-surface-container-high text-on-surface hover:bg-surface-container text-xs font-bold rounded-xl transition-colors border border-outline-variant/10"
+                          >
+                            <Clock size={12} />
+                            <span>Legacy Logs</span>
+                          </button>
+                          <button
+                            onClick={() => fetchData('legacy')}
+                            disabled={legacyLoading}
+                            className="flex items-center gap-1.5 px-3 py-1.5 bg-primary/10 text-primary hover:bg-primary/20 text-xs font-bold rounded-xl transition-colors disabled:opacity-50 border border-primary/20"
+                          >
+                            <RefreshCw size={12} className={legacyLoading ? 'animate-spin' : ''} />
+                            Sync Archive
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* Top KPI Cards */}
+                      <section className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-8">
+                        {/* Legacy CSAT */}
+                        <motion.div 
+                          initial={{ opacity: 0, y: 20 }}
+                          animate={{ opacity: 1, y: 0 }}
+                          className="glass p-8 rounded-2xl relative overflow-hidden group flex flex-col items-center text-center border-2 border-primary/20 shadow-2xl shadow-primary/5"
+                        >
+                          <div className="absolute inset-0 bg-primary/5 group-hover:bg-primary/10 transition-colors duration-500" />
+                          <div className="absolute -right-10 -top-10 w-48 h-48 bg-primary/20 rounded-full blur-3xl group-hover:bg-primary/30 transition-all duration-500" />
+                          
+                          <h3 className="relative z-10 text-on-surface-variant text-[10px] font-headline font-black uppercase tracking-[0.3em] mb-8">
+                            {legacySubFilter === 'classroom' ? 'Classroom Legacy CSAT' : legacySubFilter === 'instrumental' ? 'Instrumental Legacy CSAT' : 'Legacy CSAT Score'}
+                          </h3>
+                          
+                          <div className="relative z-10 flex flex-col items-center">
+                            <div className="relative w-44 h-44">
+                              <div className="absolute inset-0 rounded-full bg-primary/20 blur-3xl animate-pulse" />
+                              <svg className="w-full h-full transform -rotate-90 relative z-10" viewBox="0 0 100 100">
+                                <circle className="text-surface-container-high" cx="50" cy="50" r="44" fill="transparent" stroke="currentColor" strokeWidth="4" />
+                                <circle 
+                                  className="text-primary" 
+                                  cx="50" cy="50" r="44" fill="transparent" stroke="currentColor" strokeWidth="10" 
+                                  strokeDasharray={276.46} 
+                                  strokeDashoffset={276.46 * (1 - (activeLegacyStats?.csat || 0) / 100)}
+                                  strokeLinecap="round"
+                                  style={{ filter: 'drop-shadow(0 0 8px rgba(166, 138, 76, 0.6))' }}
+                                />
+                              </svg>
+                              <div className="absolute inset-0 flex flex-col items-center justify-center z-20">
+                                <span className="text-5xl font-headline font-black text-primary drop-shadow-lg">
+                                  {activeLegacyStats?.csat || 0}%
+                                </span>
+                                <span className="text-[9px] font-black uppercase tracking-[0.2em] mt-1 text-on-surface/40">
+                                  Satisfaction
+                                </span>
+                              </div>
+                            </div>
+                          </div>
+                        </motion.div>
+
+                        {/* Positive */}
+                        <motion.div 
+                          initial={{ opacity: 0, y: 20 }}
+                          animate={{ opacity: 1, y: 0 }}
+                          transition={{ delay: 0.1 }}
+                          className="glass p-8 rounded-2xl relative overflow-hidden group"
+                        >
+                          <h3 className="text-on-surface-variant text-xs font-headline font-bold uppercase tracking-widest mb-6">Archive Positive</h3>
+                          <div className="flex items-end justify-between">
+                            <div>
+                              <span className="block text-secondary-fixed text-4xl font-headline font-black">{activeLegacyStats?.positiveCount.toLocaleString() || 0}</span>
+                              <span className="text-on-surface-variant text-xs font-medium">Historical Positive</span>
+                            </div>
+                            <div className="flex items-center justify-center w-12 h-12 rounded-full bg-secondary-fixed/10 group-hover:bg-secondary-fixed/20 transition-colors">
+                              <Sparkles size={24} className="text-secondary-fixed" />
+                            </div>
+                          </div>
+                        </motion.div>
+
+                        {/* Neutral */}
+                        <motion.div 
+                          initial={{ opacity: 0, y: 20 }}
+                          animate={{ opacity: 1, y: 0 }}
+                          transition={{ delay: 0.15 }}
+                          className="glass p-8 rounded-2xl relative overflow-hidden group"
+                        >
+                          <h3 className="text-on-surface-variant text-xs font-headline font-bold uppercase tracking-widest mb-6">Archive Neutral</h3>
+                          <div className="flex items-end justify-between">
+                            <div>
+                              <span className="block text-primary text-4xl font-headline font-black">{activeLegacyStats?.neutralCount.toLocaleString() || 0}</span>
+                              <span className="text-on-surface-variant text-xs font-medium">Mixed Signals</span>
+                            </div>
+                            <div className="flex items-center justify-center w-12 h-12 rounded-full bg-primary/10 group-hover:bg-primary/20 transition-colors">
+                              <MessageSquare size={24} className="text-primary fill-primary/20" />
+                            </div>
+                          </div>
+                        </motion.div>
+
+                        {/* Critical */}
+                        <motion.div 
+                          initial={{ opacity: 0, y: 20 }}
+                          animate={{ opacity: 1, y: 0 }}
+                          transition={{ delay: 0.2 }}
+                          className="glass p-8 rounded-2xl relative overflow-hidden group"
+                        >
+                          <h3 className="text-on-surface-variant text-xs font-headline font-bold uppercase tracking-widest mb-6">Archive Critical</h3>
+                          <div className="flex items-end justify-between">
+                            <div>
+                              <span className="block text-tertiary-container text-4xl font-headline font-black">{activeLegacyStats?.negativeCount.toLocaleString() || 0}</span>
+                              <span className="text-on-surface-variant text-xs font-medium">Friction Points</span>
+                            </div>
+                            <div className="flex items-center justify-center w-12 h-12 rounded-full bg-tertiary-container/10 group-hover:bg-tertiary-container/20 transition-colors">
+                              <AlertTriangle size={24} className="text-tertiary-container" />
+                            </div>
+                          </div>
+                        </motion.div>
+                      </section>
+
+                      {/* Main Sentiment Breakdown Row (Mosaic + Intensity & Schools) */}
+                      <div className="grid grid-cols-1 xl:grid-cols-3 gap-8">
+                        <div className="xl:col-span-2">
+                          <div className="glass p-8 rounded-2xl h-full">
+                            <div className="flex justify-between items-center mb-8">
+                              <div>
+                                <h2 className="text-xl font-headline font-extrabold tracking-tight">Sentiment Breakdown</h2>
+                                <p className="text-on-surface-variant text-sm font-medium">Volume and intensity distribution</p>
+                              </div>
+                              <div className="flex gap-4">
+                                <div className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-widest">
+                                  <div className="w-2 h-2 rounded-full bg-secondary-fixed" /> POSITIVE
+                                </div>
+                                <div className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-widest">
+                                  <div className="w-2 h-2 rounded-full bg-primary" /> NEUTRAL
+                                </div>
+                                <div className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-widest">
+                                  <div className="w-2 h-2 rounded-full bg-tertiary-container" /> CRITICAL
+                                </div>
+                              </div>
+                            </div>
+
+                            <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+                              {/* Sentiment Mosaic */}
+                              <div className="lg:col-span-2 space-y-6">
+                                <div className="flex items-center justify-between">
+                                  <h3 className="text-[10px] font-black uppercase tracking-[0.2em] text-on-surface-variant">SENTIMENT MOSAIC</h3>
+                                  <div className="flex items-center gap-4">
+                                    <div className="flex items-center gap-1.5 text-[8px] font-bold uppercase tracking-widest opacity-60">
+                                      <div className="w-1.5 h-1.5 rounded-full bg-secondary-fixed" /> POSITIVE
+                                    </div>
+                                    <div className="flex items-center gap-1.5 text-[8px] font-bold uppercase tracking-widest opacity-60">
+                                      <div className="w-1.5 h-1.5 rounded-full bg-primary" /> NEUTRAL
+                                    </div>
+                                    <div className="flex items-center gap-1.5 text-[8px] font-bold uppercase tracking-widest opacity-60">
+                                      <div className="w-1.5 h-1.5 rounded-full bg-tertiary-container" /> CRITICAL
+                                    </div>
+                                  </div>
+                                </div>
+
+                                <div className="space-y-8 max-h-[400px] overflow-y-auto custom-scrollbar pr-4">
+                                  {Object.keys(groupedLegacySubmissions).length === 0 ? (
+                                    <p className="text-xs text-on-surface-variant py-8 text-center italic">No legacy submissions found for this filter.</p>
+                                  ) : (
+                                    Object.entries(groupedLegacySubmissions).map(([month, monthSubs]) => (
+                                      <div key={`legacy-month-${month}`} className="space-y-3">
+                                        <h4 className="text-[10px] font-bold uppercase tracking-widest text-on-surface-variant/60 border-b border-outline-variant/10 pb-1 flex justify-between">
+                                          <span>{month}</span>
+                                          <span>{(monthSubs as Submission[]).length} SUBMISSIONS</span>
+                                        </h4>
+                                        <div className="flex flex-wrap gap-1.5">
+                                          {(monthSubs as Submission[]).map((s, i) => (
+                                            <motion.div
+                                              key={`legacy-mosaic-${s.id}-${month}-${i}`}
+                                              initial={{ scale: 0, opacity: 0 }}
+                                              animate={{ scale: 1, opacity: 1 }}
+                                              transition={{ delay: i * 0.005 }}
+                                              whileHover={{ scale: 1.4, zIndex: 10 }}
+                                              onClick={() => setSelectedSubmission(s)}
+                                              className={`w-4 h-4 rounded-sm cursor-pointer transition-all duration-300 relative group/tile ${
+                                                s.sentiment === 'POSITIVE' ? 'bg-secondary-fixed shadow-[0_0_10px_rgba(54,255,196,0.1)]' :
+                                                s.sentiment === 'CRITICAL' ? 'bg-tertiary-container shadow-[0_0_10px_rgba(255,138,154,0.1)]' :
+                                                'bg-primary shadow-[0_0_10px_rgba(166,138,76,0.1)]'
+                                              }`}
+                                            >
+                                              {/* Custom Tooltip */}
+                                              <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-48 p-3 bg-surface-container-highest rounded-xl shadow-2xl border border-outline-variant/20 opacity-0 group-hover/tile:opacity-100 pointer-events-none transition-all duration-200 z-50 scale-75 group-hover/tile:scale-100 origin-bottom">
+                                                <div className="space-y-1.5">
+                                                  <p className="text-[10px] font-black uppercase tracking-widest text-primary truncate">{s.customer || s.id}</p>
+                                                  <p className="text-[9px] font-bold text-on-surface leading-tight line-clamp-1">{s.school || 'Unspecified School'}</p>
+                                                  <div className="flex justify-between items-center pt-1 border-t border-outline-variant/10">
+                                                    <span className="text-[8px] font-medium text-on-surface-variant">{formatSubmissionDate(s.timestamp)}</span>
+                                                    <span className={`text-[8px] font-black uppercase ${s.sentiment === 'POSITIVE' ? 'text-secondary-fixed' : s.sentiment === 'CRITICAL' ? 'text-tertiary-container' : 'text-primary'}`}>
+                                                      {s.sentiment}
+                                                    </span>
+                                                  </div>
+                                                </div>
+                                                <div className="absolute top-full left-1/2 -translate-x-1/2 border-8 border-transparent border-t-surface-container-highest" />
+                                              </div>
+                                            </motion.div>
+                                          ))}
+                                        </div>
+                                      </div>
+                                    ))
+                                  )}
+                                </div>
+
+                                <div className="flex items-center justify-between pt-2">
+                                  <p className="text-[10px] text-on-surface-variant font-medium italic">Each block represents a unique submission. Click for full details.</p>
+                                  <div className="flex items-center gap-4">
+                                    <div className="flex flex-col items-end">
+                                      <span className="text-[8px] font-black uppercase tracking-tighter text-secondary-fixed">SENTIMENT PULSE</span>
+                                      <div className="flex gap-0.5 h-2 items-end">
+                                        {filteredLegacySubmissions.slice(-20).map((s, i) => (
+                                          <div 
+                                            key={i} 
+                                            className={`w-1 rounded-full ${
+                                              s.sentiment === 'POSITIVE' ? 'bg-secondary-fixed' : 
+                                              s.sentiment === 'CRITICAL' ? 'bg-tertiary-container' : 
+                                              'bg-primary'
+                                            }`}
+                                            style={{ height: `${20 + (s.sentimentScore * 80)}%` }}
+                                          />
+                                        ))}
+                                      </div>
+                                    </div>
+                                  </div>
+                                </div>
+                              </div>
+
+                              {/* Intensity Distribution */}
+                              <div className="space-y-6">
+                                <h3 className="text-[10px] font-black uppercase tracking-[0.2em] text-on-surface-variant">INTENSITY DISTRIBUTION</h3>
+                                <div className="space-y-6">
+                                  {[
+                                    { label: 'Positive', count: activeLegacyStats?.positiveCount || 0, color: 'bg-secondary-fixed', total: filteredLegacySubmissions.length, icon: Sparkles },
+                                    { label: 'Neutral', count: Math.max(0, filteredLegacySubmissions.length - (activeLegacyStats?.positiveCount || 0) - (activeLegacyStats?.negativeCount || 0)), color: 'bg-primary', total: filteredLegacySubmissions.length, icon: MessageSquare },
+                                    { label: 'Critical', count: activeLegacyStats?.negativeCount || 0, color: 'bg-tertiary-container', total: filteredLegacySubmissions.length, icon: AlertTriangle }
+                                  ].map((item) => (
+                                    <div key={item.label} className="group">
+                                      <div className="flex justify-between items-end mb-2">
+                                        <div className="flex items-center gap-2">
+                                          <item.icon size={14} className={item.color.replace('bg-', 'text-')} />
+                                          <span className="text-xs font-black uppercase tracking-widest">{item.label}</span>
+                                        </div>
+                                        <span className="text-sm font-black">{Math.round((item.count / (item.total || 1)) * 100)}%</span>
+                                      </div>
+                                      <div className="relative h-3 bg-surface-container rounded-full overflow-hidden">
+                                        <motion.div 
+                                          initial={{ width: 0 }}
+                                          animate={{ width: `${(item.count / (item.total || 1)) * 100}%` }}
+                                          className={`h-full ${item.color} relative z-10`}
+                                        />
+                                        <div className="absolute inset-0 bg-gradient-to-r from-transparent via-white/5 to-transparent animate-shimmer" />
+                                      </div>
+                                      <div className="flex justify-between mt-1">
+                                        <span className="text-[10px] font-bold text-on-surface-variant">{item.count} Submissions</span>
+                                        <span className="text-[10px] font-bold text-on-surface-variant">
+                                          Intensity: {Math.round((filteredLegacySubmissions.filter(s => s.sentiment.toUpperCase() === item.label.toUpperCase()).reduce((acc, s) => acc + s.sentimentScore, 0) / (item.count || 1)) * 100)}%
+                                        </span>
+                                      </div>
+                                    </div>
+                                  ))}
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* Submission by school */}
+                        <div className="glass p-8 rounded-2xl">
+                          <div className="flex justify-between items-center mb-8">
+                            <div>
+                              <h2 className="text-xl font-headline font-extrabold tracking-tight">Submission by school</h2>
+                              <p className="text-on-surface-variant text-sm font-medium">Performance by location</p>
+                            </div>
+                            <SchoolIcon size={20} className="text-on-surface-variant/50" />
+                          </div>
+                          
+                          <div className="space-y-4 max-h-[480px] overflow-y-auto custom-scrollbar pr-2">
+                            {Array.from(new Set(filteredLegacySubmissions.map(s => s.school || getFuzzyVal(s.rawData, ['Teacher Name & School Name', 'Teacher Name & School Name_1', 'School']) || 'N/A')))
+                              .map(school => {
+                                const schoolSubs = filteredLegacySubmissions.filter(s => (s.school || getFuzzyVal(s.rawData, ['Teacher Name & School Name', 'Teacher Name & School Name_1', 'School']) || 'N/A') === school);
+                                const avgScore = schoolSubs.reduce((acc, s) => acc + s.sentimentScore, 0) / schoolSubs.length;
+                                const percentage = Math.round(avgScore * 100);
+                                
+                                return { school, percentage, count: schoolSubs.length, avgScore };
+                              })
+                              .sort((a, b) => b.percentage - a.percentage || b.count - a.count)
+                              .map((item, idx) => (
+                                <motion.div 
+                                  key={item.school} 
+                                  initial={{ opacity: 0, x: -20 }}
+                                  animate={{ opacity: 1, x: 0 }}
+                                  transition={{ delay: idx * 0.05 }}
+                                  className="p-5 bg-surface-container-low rounded-2xl border border-outline-variant/5 group hover:border-primary/30 transition-all hover:shadow-lg"
+                                >
+                                  <div className="flex items-center justify-between mb-3">
+                                    <div className="flex items-center gap-3">
+                                      <div className="w-8 h-8 rounded-full bg-surface-container-high flex items-center justify-center text-xs font-black text-primary border border-outline-variant/10">
+                                        {idx + 1}
+                                      </div>
+                                      <div>
+                                        <span className="font-headline font-bold text-sm block truncate max-w-[150px]">{item.school}</span>
+                                        <span className="text-[10px] text-on-surface-variant font-bold uppercase tracking-wider">{item.count} SUBMISSIONS</span>
+                                      </div>
+                                    </div>
+                                    <div className="text-right">
+                                      <span className={`text-lg font-black ${item.percentage >= 70 ? 'text-secondary-fixed' : item.percentage >= 40 ? 'text-primary' : 'text-tertiary-container'}`}>
+                                        {item.percentage}%
+                                      </span>
+                                      <div className="text-[8px] font-black uppercase tracking-tighter opacity-40">SCORE</div>
+                                    </div>
+                                  </div>
+                                  <div className="w-full h-1.5 bg-surface-container rounded-full overflow-hidden relative">
+                                    <motion.div 
+                                      initial={{ width: 0 }}
+                                      animate={{ width: `${Math.max(5, item.percentage)}%` }}
+                                      className={`h-full transition-all duration-1000 ${
+                                        item.percentage >= 70 ? 'bg-secondary-fixed' : 
+                                        item.percentage >= 40 ? 'bg-primary' : 
+                                        'bg-tertiary-container'
+                                      }`}
+                                    />
+                                  </div>
+                                </motion.div>
+                              ))
+                            }
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Submissions by Course Name */}
+                      <div className="glass p-8 rounded-2xl">
+                        <div className="flex justify-between items-end mb-10">
+                          <div>
+                            <h2 className="text-xl font-headline font-extrabold tracking-tight">Submissions by Course Name</h2>
+                            <p className="text-on-surface-variant text-sm font-medium">Sentiment distribution per unit</p>
+                          </div>
+                          <div className="flex gap-4 text-[10px] font-bold uppercase tracking-widest">
+                            <div className="flex items-center gap-1.5"><div className="w-2 h-2 rounded-full bg-secondary-fixed" /> POSITIVE</div>
+                            <div className="flex items-center gap-1.5"><div className="w-2 h-2 rounded-full bg-primary" /> NEUTRAL</div>
+                            <div className="flex items-center gap-1.5"><div className="w-2 h-2 rounded-full bg-tertiary-container" /> CRITICAL</div>
+                          </div>
+                        </div>
+                        
+                        <div className="flex flex-col gap-4">
+                          {Array.from(new Set(filteredLegacySubmissions.map(s => s.courseName || getFuzzyVal(s.rawData, ['Coursename', 'Course Name', 'Unit Taught']) || 'General Legacy'))).map((course: string) => {
+                            const courseSubs = filteredLegacySubmissions.filter(s => (s.courseName || getFuzzyVal(s.rawData, ['Coursename', 'Course Name', 'Unit Taught']) || 'General Legacy') === course);
+                            const pos = courseSubs.filter(s => s.sentiment === 'POSITIVE').length;
+                            const neg = courseSubs.filter(s => s.sentiment === 'CRITICAL').length;
+                            const neu = courseSubs.length - pos - neg;
+                            
+                            const avgScore = courseSubs.reduce((acc, s) => acc + s.sentimentScore, 0) / courseSubs.length;
+                            
+                            // Donut calculation
+                            const total = courseSubs.length;
+                            const posP = (pos / total) * 100;
+                            const neuP = (neu / total) * 100;
+                            const negP = (neg / total) * 100;
+                            
+                            const courseSummary = courseSummaries[course];
+                            
+                            return (
+                              <motion.div 
+                                key={course} 
+                                whileHover={{ x: 5 }}
+                                className="p-6 bg-surface-container-low rounded-3xl border border-outline-variant/10 flex flex-col group transition-all hover:shadow-xl hover:shadow-primary/5"
+                              >
+                                <div className="flex flex-col md:flex-row items-center gap-8">
+                                  {/* Left: Chart & Title */}
+                                  <div className="flex items-center gap-6 min-w-[280px]">
+                                    <div className="relative w-20 h-20 flex-shrink-0">
+                                      <svg className="w-full h-full transform -rotate-90" viewBox="0 0 100 100">
+                                        <circle cx="50" cy="50" r="40" fill="transparent" stroke="rgba(255,255,255,0.05)" strokeWidth="12" />
+                                        <circle cx="50" cy="50" r="40" fill="transparent" stroke="#36ffc4" strokeWidth="12" strokeDasharray={`${posP * 2.512} 251.2`} strokeDashoffset={0} strokeLinecap="round" className="transition-all duration-1000" />
+                                        <circle cx="50" cy="50" r="40" fill="transparent" stroke="#a68a4c" strokeWidth="12" strokeDasharray={`${neuP * 2.512} 251.2`} strokeDashoffset={-(posP * 2.512)} strokeLinecap="round" className="transition-all duration-1000" />
+                                        <circle cx="50" cy="50" r="40" fill="transparent" stroke="#ff8a9a" strokeWidth="12" strokeDasharray={`${negP * 2.512} 251.2`} strokeDashoffset={-((posP + neuP) * 2.512)} strokeLinecap="round" className="transition-all duration-1000" />
+                                      </svg>
+                                      <div className="absolute inset-0 flex flex-col items-center justify-center">
+                                        <span className="text-sm font-headline font-black leading-none">{total}</span>
+                                      </div>
+                                    </div>
+                                    <div>
+                                      <h4 className="font-headline font-black text-sm uppercase tracking-widest text-on-surface">{course}</h4>
+                                      <p className="text-[10px] font-bold text-on-surface-variant uppercase mt-1">{total} SUBMISSIONS</p>
+                                    </div>
+                                  </div>
+
+                                  {/* Middle: Stats & Button */}
+                                  <div className="flex-1 flex flex-col sm:flex-row items-center gap-8 w-full">
+                                    <div className="flex-1 w-full space-y-2">
+                                      <div className="flex justify-between items-center">
+                                        <span className="text-[10px] font-bold text-on-surface-variant uppercase">COURSE HEALTH</span>
+                                        <span className={`text-xs font-black ${avgScore > 0 ? 'text-secondary-fixed' : 'text-tertiary-container'}`}>
+                                          {avgScore > 0 ? '+' : ''}{avgScore.toFixed(2)}
+                                        </span>
+                                      </div>
+                                      <div className="flex gap-1 h-1.5 rounded-full overflow-hidden bg-surface-container">
+                                        <div className="h-full bg-secondary-fixed" style={{ width: `${posP}%` }} />
+                                        <div className="h-full bg-primary" style={{ width: `${neuP}%` }} />
+                                        <div className="h-full bg-tertiary-container" style={{ width: `${negP}%` }} />
+                                      </div>
+                                    </div>
+
+                                    <button 
+                                      onClick={() => generateCourseSummary(course, courseSubs)}
+                                      disabled={courseSummary?.loading}
+                                      className="px-6 py-3 rounded-2xl bg-primary/10 hover:bg-primary/20 text-primary text-[10px] font-black uppercase tracking-widest transition-all flex items-center justify-center gap-2 disabled:opacity-50 whitespace-nowrap"
+                                    >
+                                      {courseSummary?.loading ? (
+                                        <Loader2 size={14} className="animate-spin" />
+                                      ) : (
+                                        <Sparkles size={14} />
+                                      )}
+                                      {courseSummary?.summary ? 'Refresh AI' : 'GENERATE AI REPORT'}
+                                    </button>
+                                  </div>
+                                </div>
+
+                                <AnimatePresence>
+                                  {courseSummary?.summary && (
+                                    <motion.div
+                                      initial={{ opacity: 0, height: 0 }}
+                                      animate={{ opacity: 1, height: 'auto' }}
+                                      exit={{ opacity: 0, height: 0 }}
+                                      className="overflow-hidden"
+                                    >
+                                      <div className="mt-6 pt-6 border-t border-outline-variant/10 grid grid-cols-1 lg:grid-cols-3 gap-8">
+                                        <div className="lg:col-span-2 space-y-2">
+                                          <div className="flex items-center gap-2 text-primary">
+                                            <Sparkles size={12} />
+                                            <p className="text-[10px] font-black uppercase tracking-tighter">Consolidated AI Summary</p>
+                                          </div>
+                                          <p className="text-sm text-on-surface-variant leading-relaxed italic">
+                                            "{courseSummary.summary}"
+                                          </p>
+                                        </div>
+                                        <div className="space-y-3">
+                                          <p className="text-[10px] font-black text-primary uppercase tracking-tighter">Actionable Improvements</p>
+                                          <ul className="space-y-2">
+                                            {courseSummary.improvements.map((imp, idx) => (
+                                              <li key={idx} className="text-[11px] text-on-surface-variant flex items-start gap-2 bg-surface-container/30 p-2 rounded-lg border border-outline-variant/5">
+                                                <div className="w-1.5 h-1.5 rounded-full bg-primary/50 mt-1.5 flex-shrink-0" />
+                                                <span>{imp}</span>
+                                              </li>
+                                            ))}
+                                          </ul>
+                                        </div>
+                                      </div>
+                                    </motion.div>
+                                  )}
+                                </AnimatePresence>
+                              </motion.div>
+                            );
+                          })}
+                        </div>
+                      </div>
                     </>
                   )}
                 </motion.div>
@@ -2870,6 +3541,121 @@ export default function App() {
                   exit={{ opacity: 0, y: -20 }}
                   className="max-w-2xl mx-auto space-y-8"
                 >
+                  {/* Page Visibility / View Controls */}
+                  <div className="glass p-8 rounded-3xl space-y-6">
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                      <div>
+                        <h2 className="text-2xl font-headline font-black flex items-center gap-3">
+                          <span>Page Visibility</span>
+                          <span className={`text-[10px] font-black uppercase px-2.5 py-1 rounded-full border ${
+                            hideCurrentPages 
+                              ? 'bg-tertiary-container/10 text-tertiary-container border-tertiary-container/20' 
+                              : 'bg-secondary-fixed/10 text-secondary-fixed border-secondary-fixed/20'
+                          }`}>
+                            {hideCurrentPages ? 'Current Views Hidden' : 'All Views Visible'}
+                          </span>
+                        </h2>
+                        <p className="text-on-surface-variant text-sm font-medium mt-1">
+                          Configure which sections appear in the navigation bar and sidebar.
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="p-6 bg-surface-container-low rounded-2xl border border-outline-variant/10 space-y-5">
+                      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                        <div className="space-y-1">
+                          <p className="text-sm font-bold text-on-surface flex items-center gap-2">
+                            {hideCurrentPages ? <EyeOff size={16} className="text-tertiary-container" /> : <Eye size={16} className="text-primary" />}
+                            <span>Hide Overview, Sentiment, and Logs</span>
+                          </p>
+                          <p className="text-xs text-on-surface-variant leading-relaxed">
+                            {hideCurrentPages 
+                              ? 'Overview, Sentiment, and Logs are currently hidden from the sidebar & navigation. Tap below to restore them.' 
+                              : 'Hide the standard 3 views (Overview, Sentiment Analysis, and Submission Logs) to focus strictly on Legacy Jotform archives.'}
+                          </p>
+                        </div>
+
+                        <button
+                          onClick={toggleHideCurrentPages}
+                          className={`px-5 py-3 rounded-xl font-headline font-bold text-xs uppercase tracking-wider transition-all flex items-center justify-center gap-2.5 shadow-md flex-shrink-0 cursor-pointer ${
+                            hideCurrentPages
+                              ? 'bg-primary text-on-primary hover:bg-primary/90 hover:scale-[1.02]'
+                              : 'bg-surface-container-highest text-on-surface border border-outline-variant/20 hover:border-primary/40 hover:text-primary hover:bg-surface-container'
+                          }`}
+                        >
+                          {hideCurrentPages ? (
+                            <>
+                              <Eye size={15} />
+                              <span>Show Overview, Sentiment & Logs</span>
+                            </>
+                          ) : (
+                            <>
+                              <EyeOff size={15} />
+                              <span>Hide Overview, Sentiment & Logs</span>
+                            </>
+                          )}
+                        </button>
+                      </div>
+
+                      {/* Status breakdown */}
+                      <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5 pt-3 border-t border-outline-variant/10">
+                        <div className={`p-3 rounded-xl border transition-all ${hideCurrentPages ? 'bg-surface-container-high/40 border-outline-variant/10 opacity-50' : 'bg-surface-container-high border-outline-variant/20'}`}>
+                          <div className="flex items-center justify-between">
+                            <span className="text-xs font-bold">Overview</span>
+                            <span className={`text-[9px] font-black uppercase px-1.5 py-0.5 rounded ${hideCurrentPages ? 'bg-outline-variant/20 text-on-surface-variant' : 'bg-secondary-fixed/20 text-secondary-fixed'}`}>
+                              {hideCurrentPages ? 'Hidden' : 'Visible'}
+                            </span>
+                          </div>
+                        </div>
+
+                        <div className={`p-3 rounded-xl border transition-all ${hideCurrentPages ? 'bg-surface-container-high/40 border-outline-variant/10 opacity-50' : 'bg-surface-container-high border-outline-variant/20'}`}>
+                          <div className="flex items-center justify-between">
+                            <span className="text-xs font-bold">Sentiment</span>
+                            <span className={`text-[9px] font-black uppercase px-1.5 py-0.5 rounded ${hideCurrentPages ? 'bg-outline-variant/20 text-on-surface-variant' : 'bg-secondary-fixed/20 text-secondary-fixed'}`}>
+                              {hideCurrentPages ? 'Hidden' : 'Visible'}
+                            </span>
+                          </div>
+                        </div>
+
+                        <div className={`p-3 rounded-xl border transition-all ${hideCurrentPages ? 'bg-surface-container-high/40 border-outline-variant/10 opacity-50' : 'bg-surface-container-high border-outline-variant/20'}`}>
+                          <div className="flex items-center justify-between">
+                            <span className="text-xs font-bold">Logs</span>
+                            <span className={`text-[9px] font-black uppercase px-1.5 py-0.5 rounded ${hideCurrentPages ? 'bg-outline-variant/20 text-on-surface-variant' : 'bg-secondary-fixed/20 text-secondary-fixed'}`}>
+                              {hideCurrentPages ? 'Hidden' : 'Visible'}
+                            </span>
+                          </div>
+                        </div>
+
+                        <div className="p-3 rounded-xl border bg-surface-container-high border-outline-variant/20">
+                          <div className="flex items-center justify-between">
+                            <span className="text-xs font-bold">Legacy Logs</span>
+                            <span className="text-[9px] font-black uppercase px-1.5 py-0.5 rounded bg-secondary-fixed/20 text-secondary-fixed">
+                              Visible
+                            </span>
+                          </div>
+                        </div>
+
+                        <div className="p-3 rounded-xl border bg-surface-container-high border-outline-variant/20">
+                          <div className="flex items-center justify-between">
+                            <span className="text-xs font-bold">Legacy Sent.</span>
+                            <span className="text-[9px] font-black uppercase px-1.5 py-0.5 rounded bg-secondary-fixed/20 text-secondary-fixed">
+                              Visible
+                            </span>
+                          </div>
+                        </div>
+
+                        <div className="p-3 rounded-xl border bg-surface-container-high border-outline-variant/20">
+                          <div className="flex items-center justify-between">
+                            <span className="text-xs font-bold">Settings</span>
+                            <span className="text-[9px] font-black uppercase px-1.5 py-0.5 rounded bg-primary/20 text-primary">
+                              Always
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
                   <div className="glass p-8 rounded-3xl space-y-6">
                     <h2 className="text-2xl font-headline font-black">Connection Status</h2>
                     <div className="space-y-4">
@@ -2991,7 +3777,7 @@ export default function App() {
                     </div>
                     <div className="flex items-center gap-1.5">
                       <Clock size={14} />
-                      {selectedSubmission.timestamp}
+                      {formatSubmissionDate(selectedSubmission.timestamp)}
                     </div>
                   </div>
                 </div>
