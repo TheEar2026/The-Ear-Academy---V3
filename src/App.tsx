@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { useState, useEffect, useMemo, useRef } from 'react';
+import { useState, useEffect, useMemo, useRef, ChangeEvent } from 'react';
 import { 
   LayoutDashboard, 
   BarChart3, 
@@ -38,7 +38,12 @@ import {
   Filter,
   ChevronDown,
   Eye,
-  EyeOff
+  EyeOff,
+  Cloud,
+  UploadCloud,
+  DownloadCloud,
+  Share2,
+  Copy
 } from 'lucide-react';
 import { 
   AreaChart, 
@@ -263,6 +268,9 @@ export default function App() {
   const [isDisputing, setIsDisputing] = useState(false);
   const [isSaved, setIsSaved] = useState(false);
   const [courseSummaries, setCourseSummaries] = useState<Record<string, { summary: string; improvements: string[]; loading: boolean }>>({});
+  const [syncStatus, setSyncStatus] = useState<'idle' | 'syncing' | 'synced' | 'error'>('idle');
+  const [syncMessage, setSyncMessage] = useState<string>('');
+  const [serverEvaluationCount, setServerEvaluationCount] = useState<number>(0);
 
   // Close date dropdown on outside click
   useEffect(() => {
@@ -497,9 +505,88 @@ export default function App() {
       }
       
       localStorage.setItem('feedback_evaluations', JSON.stringify(evaluations));
+
+      // Asynchronously mirror to server evaluations endpoint so any user or boss sees it
+      fetch('/api/evaluations', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          evaluations: {
+            [submissionId]: data
+          }
+        })
+      }).then(r => r.json()).then(j => {
+        if (j.count) setServerEvaluationCount(j.count);
+      }).catch(err => console.warn('Failed to sync evaluation to server:', err));
     } catch (e) {
       console.error("Failed to persist evaluation", e);
     }
+  };
+
+  const syncEvaluationsToServer = async (explicitAlert = false) => {
+    setSyncStatus('syncing');
+    try {
+      const stored = localStorage.getItem('feedback_evaluations');
+      const evaluations = stored ? JSON.parse(stored) : {};
+      const count = Object.keys(evaluations).length;
+
+      const res = await fetch('/api/evaluations', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ evaluations })
+      });
+
+      if (!res.ok) throw new Error(`Server responded with ${res.status}`);
+      const json = await res.json();
+      const updatedCount = json.count || count;
+      setServerEvaluationCount(updatedCount);
+      setSyncStatus('synced');
+      setSyncMessage(`Successfully synced ${updatedCount} evaluated records to the server! When your boss or anyone opens this link, they will see your exact evaluated stats and CSAT score.`);
+      setTimeout(() => {
+        setSyncStatus('idle');
+      }, 5000);
+    } catch (e: any) {
+      console.error('Failed to sync to server', e);
+      setSyncStatus('error');
+      setSyncMessage('Failed to sync evaluations to server. Please try again.');
+      setTimeout(() => setSyncStatus('idle'), 5000);
+    }
+  };
+
+  const exportEvaluationsBackup = () => {
+    try {
+      const stored = localStorage.getItem('feedback_evaluations') || '{}';
+      const blob = new Blob([stored], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `ear-academy-ai-evaluations-${new Date().toISOString().slice(0, 10)}.json`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      console.error("Failed to export evaluations backup", e);
+    }
+  };
+
+  const importEvaluationsBackup = (e: ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = async (event) => {
+      try {
+        const text = event.target?.result as string;
+        const parsed = JSON.parse(text);
+        if (parsed && typeof parsed === 'object') {
+          localStorage.setItem('feedback_evaluations', JSON.stringify(parsed));
+          await syncEvaluationsToServer(true);
+          await fetchData('legacy');
+          await fetchData('current');
+        }
+      } catch (err) {
+        console.error("Failed to import evaluations backup", err);
+      }
+    };
+    reader.readAsText(file);
   };
 
   const revertAISentiment = (submission: Submission) => {
@@ -982,22 +1069,61 @@ export default function App() {
 
       const processed = processSheetData(result.data || [], type);
       
-      // Merge with persisted evaluations
-      let mergedData = processed;
+      // Merge with persisted evaluations: fetch server evaluations + local cache
+      let serverEvaluations: Record<string, any> = {};
+      try {
+        const evalRes = await fetch('/api/evaluations');
+        if (evalRes.ok) {
+          const evalJson = await evalRes.json();
+          serverEvaluations = evalJson.evaluations || {};
+          if (evalJson.count !== undefined) {
+            setServerEvaluationCount(evalJson.count);
+          }
+        }
+      } catch (err) {
+        console.warn("[Frontend] Failed to fetch server evaluations", err);
+      }
+
+      let localEvaluations: Record<string, any> = {};
       try {
         const stored = localStorage.getItem('feedback_evaluations');
         if (stored) {
-          const evaluations = JSON.parse(stored);
-          mergedData = processed.map(s => {
-            if (evaluations[s.id]) {
-              return { ...s, ...evaluations[s.id] };
-            }
-            return s;
-          });
+          localEvaluations = JSON.parse(stored);
         }
       } catch (e) {
-        console.error("Error merging persisted evaluations", e);
+        console.error("Error reading persisted evaluations from localStorage", e);
       }
+
+      const localCount = Object.keys(localEvaluations).length;
+      const serverCount = Object.keys(serverEvaluations).length;
+
+      // If user has local evaluations not yet saved on server, auto-sync so all visitors/boss see them
+      if (localCount > 0 && localCount >= serverCount) {
+        fetch('/api/evaluations', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ evaluations: localEvaluations })
+        }).then(r => r.json()).then(j => {
+          if (j.count) setServerEvaluationCount(j.count);
+        }).catch(e => console.warn('Auto-sync to server background error:', e));
+      }
+
+      // Merge evaluations (local overrides or supplements server)
+      const combinedEvaluations = { ...serverEvaluations, ...localEvaluations };
+
+      // Also persist back to localStorage so if the boss opens the link, their local cache also has it
+      if (Object.keys(combinedEvaluations).length > 0) {
+        try {
+          localStorage.setItem('feedback_evaluations', JSON.stringify(combinedEvaluations));
+        } catch (e) {}
+      }
+
+      const mergedData = processed.map(s => {
+        if (combinedEvaluations[s.id]) {
+          return { ...s, ...combinedEvaluations[s.id] };
+        }
+        return s;
+      });
       
       console.log(`[Frontend] Processed ${mergedData.length} ${type} submissions (merged with local overrides).`);
       const computedStats = calculateStats(mergedData);
@@ -2235,6 +2361,21 @@ export default function App() {
                             <RefreshCw size={12} className={legacyLoading ? 'animate-spin' : ''} />
                             Sync Archive
                           </button>
+                          <button
+                            onClick={() => syncEvaluationsToServer(true)}
+                            disabled={syncStatus === 'syncing'}
+                            title="Push your evaluated stats to the cloud server so your boss sees the exact same 43% CSAT score"
+                            className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold rounded-xl transition-all border ${
+                              syncStatus === 'synced'
+                                ? 'bg-secondary-fixed/20 text-secondary-fixed border-secondary-fixed/40'
+                                : 'bg-secondary-fixed/10 text-secondary-fixed hover:bg-secondary-fixed/20 border-secondary-fixed/20'
+                            }`}
+                          >
+                            <Cloud size={12} className={syncStatus === 'syncing' ? 'animate-bounce' : ''} />
+                            <span>
+                              {syncStatus === 'syncing' ? 'Syncing...' : syncStatus === 'synced' ? 'Synced to Cloud!' : 'Sync to Shared Link'}
+                            </span>
+                          </button>
                         </div>
                       </div>
 
@@ -2927,6 +3068,21 @@ export default function App() {
                           >
                             <RefreshCw size={12} className={legacyLoading ? 'animate-spin' : ''} />
                             Sync Archive
+                          </button>
+                          <button
+                            onClick={() => syncEvaluationsToServer(true)}
+                            disabled={syncStatus === 'syncing'}
+                            title="Push your evaluated stats to the cloud server so your boss sees the exact same 43% CSAT score"
+                            className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold rounded-xl transition-all border ${
+                              syncStatus === 'synced'
+                                ? 'bg-secondary-fixed/20 text-secondary-fixed border-secondary-fixed/40'
+                                : 'bg-secondary-fixed/10 text-secondary-fixed hover:bg-secondary-fixed/20 border-secondary-fixed/20'
+                            }`}
+                          >
+                            <Cloud size={12} className={syncStatus === 'syncing' ? 'animate-bounce' : ''} />
+                            <span>
+                              {syncStatus === 'syncing' ? 'Syncing...' : syncStatus === 'synced' ? 'Synced to Cloud!' : 'Sync to Shared Link'}
+                            </span>
                           </button>
                         </div>
                       </div>
@@ -3694,6 +3850,103 @@ export default function App() {
                           </div>
                         </div>
                       </div>
+                    </div>
+                  </div>
+
+                  {/* Shared Team Persistence (Boss View) */}
+                  <div className="glass p-8 rounded-3xl space-y-6 border border-secondary-fixed/20 shadow-xl shadow-secondary-fixed/5">
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <Cloud className="text-secondary-fixed" size={20} />
+                          <h2 className="text-xl font-headline font-black">Shared Team Persistence (Boss View)</h2>
+                        </div>
+                        <p className="text-on-surface-variant text-xs mt-1 leading-relaxed">
+                          When you evaluate feedback with AI, evaluations are synced to the shared cloud server so that when you send the application link to your boss or colleagues, they see the exact same 43% CSAT score and evaluations.
+                        </p>
+                      </div>
+                      <span className="text-[10px] font-black uppercase px-2.5 py-1 rounded-full bg-secondary-fixed/10 text-secondary-fixed border border-secondary-fixed/20 whitespace-nowrap self-start sm:self-center">
+                        {serverEvaluationCount > 0 ? `${serverEvaluationCount} Synced to Cloud` : 'Ready to Sync'}
+                      </span>
+                    </div>
+
+                    {syncMessage && (
+                      <div className={`p-4 rounded-xl text-xs font-bold border flex items-center gap-2.5 ${
+                        syncStatus === 'error' 
+                          ? 'bg-tertiary-container/10 text-tertiary-container border-tertiary-container/20' 
+                          : 'bg-secondary-fixed/10 text-secondary-fixed border-secondary-fixed/20'
+                      }`}>
+                        {syncStatus === 'error' ? <AlertTriangle size={16} /> : <CheckCircle2 size={16} />}
+                        <span>{syncMessage}</span>
+                      </div>
+                    )}
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                      <div className="p-4 bg-surface-container-low rounded-xl border border-outline-variant/10">
+                        <span className="block text-[10px] font-black uppercase tracking-wider text-on-surface-variant">Cloud Server Storage</span>
+                        <span className="block text-2xl font-headline font-black text-secondary-fixed mt-1">
+                          {serverEvaluationCount} records
+                        </span>
+                        <span className="text-[11px] text-on-surface-variant">Stored on server & visible to everyone</span>
+                      </div>
+                      <div className="p-4 bg-surface-container-low rounded-xl border border-outline-variant/10">
+                        <span className="block text-[10px] font-black uppercase tracking-wider text-on-surface-variant">Your Browser Storage</span>
+                        <span className="block text-2xl font-headline font-black text-primary mt-1">
+                          {(() => {
+                            try {
+                              return Object.keys(JSON.parse(localStorage.getItem('feedback_evaluations') || '{}')).length;
+                            } catch {
+                              return 0;
+                            }
+                          })()} records
+                        </span>
+                        <span className="text-[11px] text-on-surface-variant">Locally evaluated in your session</span>
+                      </div>
+                    </div>
+
+                    <div className="flex flex-wrap gap-3 pt-2">
+                      <button
+                        onClick={() => syncEvaluationsToServer(true)}
+                        disabled={syncStatus === 'syncing'}
+                        className="flex-1 min-w-[200px] py-3.5 px-4 bg-secondary-fixed text-on-secondary-fixed rounded-xl font-headline font-bold text-xs uppercase tracking-wider flex items-center justify-center gap-2 shadow-lg shadow-secondary-fixed/10 hover:opacity-95 transition-all disabled:opacity-50 cursor-pointer"
+                      >
+                        <UploadCloud size={16} className={syncStatus === 'syncing' ? 'animate-bounce' : ''} />
+                        <span>{syncStatus === 'syncing' ? 'Pushing to Cloud...' : 'Push Evaluations to Cloud Link'}</span>
+                      </button>
+
+                      <button
+                        onClick={() => {
+                          if (navigator.clipboard) {
+                            navigator.clipboard.writeText(window.location.href);
+                            setSyncMessage("App link copied to clipboard! Anyone opening this link will now load the cloud-synced 43% CSAT stats.");
+                            setTimeout(() => setSyncMessage(''), 5000);
+                          }
+                        }}
+                        className="py-3.5 px-4 bg-surface-container-high hover:bg-surface-container text-on-surface rounded-xl font-headline font-bold text-xs uppercase tracking-wider flex items-center justify-center gap-2 border border-outline-variant/20 transition-all cursor-pointer"
+                      >
+                        <Copy size={16} />
+                        <span>Copy Link for Boss</span>
+                      </button>
+
+                      <button
+                        onClick={exportEvaluationsBackup}
+                        title="Download backup file of evaluations"
+                        className="py-3.5 px-4 bg-surface-container-high hover:bg-surface-container text-on-surface rounded-xl font-headline font-bold text-xs uppercase tracking-wider flex items-center justify-center gap-2 border border-outline-variant/20 transition-all cursor-pointer"
+                      >
+                        <DownloadCloud size={16} />
+                        <span>Export Backup</span>
+                      </button>
+
+                      <label className="py-3.5 px-4 bg-surface-container-high hover:bg-surface-container text-on-surface rounded-xl font-headline font-bold text-xs uppercase tracking-wider flex items-center justify-center gap-2 border border-outline-variant/20 transition-all cursor-pointer">
+                        <UploadCloud size={16} />
+                        <span>Import Backup</span>
+                        <input
+                          type="file"
+                          accept=".json"
+                          onChange={importEvaluationsBackup}
+                          className="hidden"
+                        />
+                      </label>
                     </div>
                   </div>
 

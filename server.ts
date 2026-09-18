@@ -1,5 +1,6 @@
 import express from "express";
 import path from "path";
+import fs from "fs";
 import dotenv from "dotenv";
 import axios from "axios";
 import Papa from "papaparse";
@@ -187,7 +188,60 @@ async function generateContentWithRetry(
 const app = express();
 const PORT = 3000;
 
-app.use(express.json());
+app.use(express.json({ limit: "25mb" }));
+
+// Persistent evaluations storage on server
+const EVALUATIONS_FILE = path.join(process.cwd(), "evaluations.json");
+
+function getStoredEvaluations(): Record<string, any> {
+  try {
+    if (fs.existsSync(EVALUATIONS_FILE)) {
+      const content = fs.readFileSync(EVALUATIONS_FILE, "utf-8");
+      return JSON.parse(content) || {};
+    }
+  } catch (err) {
+    console.error("[Server] Error reading evaluations.json:", err);
+  }
+  return {};
+}
+
+function saveStoredEvaluations(evals: Record<string, any>) {
+  try {
+    fs.writeFileSync(EVALUATIONS_FILE, JSON.stringify(evals, null, 2), "utf-8");
+  } catch (err) {
+    console.error("[Server] Error writing evaluations.json:", err);
+  }
+}
+
+// API Routes to get and save shared evaluations
+app.get("/api/evaluations", (req, res) => {
+  const evaluations = getStoredEvaluations();
+  res.json({
+    evaluations,
+    count: Object.keys(evaluations).length
+  });
+});
+
+app.post("/api/evaluations", (req, res) => {
+  try {
+    const current = getStoredEvaluations();
+    const incoming = req.body?.evaluations || req.body;
+    if (incoming && typeof incoming === "object") {
+      Object.entries(incoming).forEach(([id, val]) => {
+        if (val === null) {
+          delete current[id];
+        } else if (typeof val === "object") {
+          current[id] = { ...(current[id] || {}), ...(val as object) };
+        }
+      });
+      saveStoredEvaluations(current);
+    }
+    res.json({ success: true, count: Object.keys(current).length });
+  } catch (err: any) {
+    console.error("[Server] Failed to save evaluations:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
 
 // Helper function to fetch and parse Google Sheet CSV
 async function fetchAndParseSheet(sheetId: string, sheetCategory: string = 'General') {
