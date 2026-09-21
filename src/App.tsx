@@ -1040,15 +1040,27 @@ export default function App() {
     else setLegacyLoading(true);
 
     try {
-      const response = await fetch(`/api/data/${type}`);
-      const text = await response.text();
+      let response = await fetch(`/api/data/${type}`);
+      let text = await response.text();
       
       let result;
       try {
         result = JSON.parse(text);
       } catch (e) {
-        console.error(`[Frontend] Failed to parse ${type} response as JSON:`, text);
-        throw new Error(`Server returned non-JSON response: ${text.slice(0, 100)}${text.length > 100 ? '...' : ''}`);
+        // Retry once after 1200ms in case of serverless function cold-start
+        console.warn(`[Frontend] Initial response was non-JSON, retrying ${type} fetch once...`);
+        await new Promise((r) => setTimeout(r, 1200));
+        try {
+          response = await fetch(`/api/data/${type}`);
+          text = await response.text();
+          result = JSON.parse(text);
+        } catch (retryErr) {
+          console.error(`[Frontend] Failed to parse ${type} response as JSON after retry:`, text);
+          if (text.includes('FUNCTION_INVOCATION_FAILED')) {
+            throw new Error(`Serverless Function Invocation Failed. Please ensure your Vercel project has DATABASE_URL set in Settings > Environment Variables.`);
+          }
+          throw new Error(`Server returned non-JSON response: ${text.slice(0, 100)}${text.length > 100 ? '...' : ''}`);
+        }
       }
 
       console.log(`[Frontend] ${type} response:`, result);

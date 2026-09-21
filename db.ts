@@ -10,7 +10,10 @@ if (fs.existsSync(envLocalPath)) {
   dotenv.config({ path: envLocalPath, override: true });
 }
 
-const EVALUATIONS_FILE = path.join(process.cwd(), "evaluations.json");
+const EVALUATIONS_FILE = process.env.VERCEL
+  ? path.join("/tmp", "evaluations.json")
+  : path.join(process.cwd(), "evaluations.json");
+const PACKAGED_EVALUATIONS_FILE = path.join(process.cwd(), "evaluations.json");
 
 function getDbUrl(): string | null {
   if (process.env.DATABASE_URL) return process.env.DATABASE_URL.trim();
@@ -31,7 +34,12 @@ function getSql() {
   const url = getDbUrl();
   if (!url) return null;
   if (!sqlInstance) {
-    sqlInstance = neon(url);
+    try {
+      sqlInstance = neon(url);
+    } catch (e) {
+      console.error("[Neon DB] Client initialization error:", e);
+      return null;
+    }
   }
   return sqlInstance;
 }
@@ -43,8 +51,12 @@ function getLocalEvaluations(): Record<string, any> {
       const content = fs.readFileSync(EVALUATIONS_FILE, "utf-8");
       return JSON.parse(content) || {};
     }
+    if (fs.existsSync(PACKAGED_EVALUATIONS_FILE)) {
+      const content = fs.readFileSync(PACKAGED_EVALUATIONS_FILE, "utf-8");
+      return JSON.parse(content) || {};
+    }
   } catch (err) {
-    console.error("[Local Storage] Error reading evaluations.json:", err);
+    console.error("[Local Storage] Error reading evaluations fallback:", err);
   }
   return {};
 }
@@ -53,7 +65,8 @@ function saveLocalEvaluations(evals: Record<string, any>) {
   try {
     fs.writeFileSync(EVALUATIONS_FILE, JSON.stringify(evals, null, 2), "utf-8");
   } catch (err) {
-    console.error("[Local Storage] Error writing evaluations.json:", err);
+    // In serverless read-only environments, this is expected if /tmp isn't used
+    console.warn("[Local Storage] Notice: Could not persist local fallback file (harmless in serverless):", err);
   }
 }
 
