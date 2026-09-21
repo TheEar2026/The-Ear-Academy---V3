@@ -6,8 +6,13 @@ import axios from "axios";
 import Papa from "papaparse";
 import { google } from "googleapis";
 import { GoogleGenAI } from "@google/genai";
+import { getEvaluations, saveEvaluations, getDbStatus } from "./db.ts";
 
 dotenv.config();
+const envLocalPath = path.resolve(process.cwd(), ".env.local");
+if (fs.existsSync(envLocalPath)) {
+  dotenv.config({ path: envLocalPath, override: true });
+}
 
 // Lazy Gemini client helper
 let aiClientInstance: GoogleGenAI | null = null;
@@ -190,53 +195,39 @@ const PORT = 3000;
 
 app.use(express.json({ limit: "25mb" }));
 
-// Persistent evaluations storage on server
-const EVALUATIONS_FILE = path.join(process.cwd(), "evaluations.json");
-
-function getStoredEvaluations(): Record<string, any> {
+// Database Status endpoint
+app.get("/api/db/status", async (req, res) => {
   try {
-    if (fs.existsSync(EVALUATIONS_FILE)) {
-      const content = fs.readFileSync(EVALUATIONS_FILE, "utf-8");
-      return JSON.parse(content) || {};
-    }
-  } catch (err) {
-    console.error("[Server] Error reading evaluations.json:", err);
+    const status = await getDbStatus();
+    res.json(status);
+  } catch (err: any) {
+    res.status(500).json({ connected: false, error: err?.message || String(err) });
   }
-  return {};
-}
-
-function saveStoredEvaluations(evals: Record<string, any>) {
-  try {
-    fs.writeFileSync(EVALUATIONS_FILE, JSON.stringify(evals, null, 2), "utf-8");
-  } catch (err) {
-    console.error("[Server] Error writing evaluations.json:", err);
-  }
-}
-
-// API Routes to get and save shared evaluations
-app.get("/api/evaluations", (req, res) => {
-  const evaluations = getStoredEvaluations();
-  res.json({
-    evaluations,
-    count: Object.keys(evaluations).length
-  });
 });
 
-app.post("/api/evaluations", (req, res) => {
+// API Routes to get and save shared evaluations (backed by Neon PostgreSQL)
+app.get("/api/evaluations", async (req, res) => {
   try {
-    const current = getStoredEvaluations();
+    const result = await getEvaluations();
+    res.json({
+      evaluations: result.evaluations,
+      count: result.count,
+      source: result.source
+    });
+  } catch (err: any) {
+    console.error("[Server] Error getting evaluations:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post("/api/evaluations", async (req, res) => {
+  try {
     const incoming = req.body?.evaluations || req.body;
     if (incoming && typeof incoming === "object") {
-      Object.entries(incoming).forEach(([id, val]) => {
-        if (val === null) {
-          delete current[id];
-        } else if (typeof val === "object") {
-          current[id] = { ...(current[id] || {}), ...(val as object) };
-        }
-      });
-      saveStoredEvaluations(current);
+      const result = await saveEvaluations(incoming);
+      return res.json(result);
     }
-    res.json({ success: true, count: Object.keys(current).length });
+    res.json({ success: true, count: 0 });
   } catch (err: any) {
     console.error("[Server] Failed to save evaluations:", err);
     res.status(500).json({ error: err.message });

@@ -1,1 +1,66 @@
-{}
+{
+  "[object Object]-idx-0": {
+    "isReviewed": true
+  },
+  "legacy-idx-1": {
+    "sentiment": "CRITICAL",
+    "sentimentScore": 0.28,
+    "sentimentColor": "text-tertiary-container bg-tertiary-container/10 ring-tertiary-container/20",
+    "aiSummary": "The student experienced difficulty with the lesson flow or content complexity, citing specific friction points that impacted their learning.",
+    "aiSentiment": "CRITICAL",
+    "sentimentBasis": [
+      "Critical sentiment signals indicating frustration or excessive difficulty."
+    ],
+    "isAIEvaluated": true,
+    "isReviewed": true
+  },
+  "legacy-idx-2": {
+    "sentiment": "NEUTRAL",
+    "sentimentScore": 0.5,
+    "sentimentColor": "text-primary bg-primary/10 ring-primary/20",
+    "aiSummary": "The teacher noted that pupils responded positively and engaged well independently with the provision activities, finding the challenge level and resources generally sufficient. However, delivery difficulties occurred in Lesson 2, Lesson 1 was not well received, and concerns were raised regarding alignment with effective learning.",
+    "aiSentiment": "NEUTRAL",
+    "aspects": {
+      "clarity": "Confusing",
+      "confidence": "Unchanged",
+      "engagement": "High"
+    },
+    "sentimentBasis": [
+      "Feedback reflects a mixed experience: strong pupil engagement and positive response are balanced by delivery difficulty, one poorly received lesson, and a negative response regarding alignment with effective learning."
+    ],
+    "isAIEvaluated": true
+  },
+  "legacy-idx-0": {
+    "sentiment": "POSITIVE",
+    "sentimentScore": 0.9,
+    "sentimentColor": "text-secondary-fixed bg-secondary-fixed/10 ring-secondary-fixed/20",
+    "aiSummary": "The student reported a positive experience with the Music and Movement unit, specifically highlighting action songs as a success. They noted that the lessons are age-appropriate and have significantly boosted their professional confidence.",
+    "aiSentiment": "POSITIVE",
+    "aspects": {
+      "clarity": "Clear",
+      "confidence": "Increased",
+      "engagement": "High"
+    },
+    "sentimentBasis": [
+      "The feedback indicates a high level of satisfaction with no reported dislikes for multiple facets. The explicit mention of increased confidence and positive engagement with the activities strongly aligns with the positive rubric criteria."
+    ],
+    "isAIEvaluated": true,
+    "isReviewed": true
+  },
+  "legacy-idx-261-Note Lengths/Bars": {
+    "sentiment": "POSITIVE",
+    "sentimentScore": 1,
+    "sentimentColor": "text-secondary-fixed bg-secondary-fixed/10 ring-secondary-fixed/20",
+    "aiSummary": "The student expressed satisfaction with the theory course, specifically enjoying learning about note lengths and bars. They found the difficulty appropriate and noted that the lessons were satisfactorily presented with no areas of dislike.",
+    "aiSentiment": "POSITIVE",
+    "aspects": {
+      "clarity": "Clear",
+      "confidence": "Increased",
+      "engagement": "High"
+    },
+    "sentimentBasis": [
+      "The student provided a high rating, indicated no disliked facets, and maintained a positive tone throughout the feedback, meeting all criteria for a positive classification under the rubric."
+    ],
+    "isAIEvaluated": true
+  }
+}

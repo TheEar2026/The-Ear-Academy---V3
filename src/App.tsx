@@ -3883,11 +3883,17 @@ export default function App() {
 
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                       <div className="p-4 bg-surface-container-low rounded-xl border border-outline-variant/10">
-                        <span className="block text-[10px] font-black uppercase tracking-wider text-on-surface-variant">Cloud Server Storage</span>
+                        <div className="flex items-center justify-between">
+                          <span className="block text-[10px] font-black uppercase tracking-wider text-on-surface-variant">Neon PostgreSQL Storage</span>
+                          <span className="flex items-center gap-1 text-[10px] font-bold text-secondary-fixed bg-secondary-fixed/10 px-2 py-0.5 rounded-full">
+                            <span className="w-1.5 h-1.5 rounded-full bg-secondary-fixed animate-pulse"></span>
+                            Live • neondb
+                          </span>
+                        </div>
                         <span className="block text-2xl font-headline font-black text-secondary-fixed mt-1">
                           {serverEvaluationCount} records
                         </span>
-                        <span className="text-[11px] text-on-surface-variant">Stored on server & visible to everyone</span>
+                        <span className="text-[11px] text-on-surface-variant">Persisted in Neon Postgres & shared across team</span>
                       </div>
                       <div className="p-4 bg-surface-container-low rounded-xl border border-outline-variant/10">
                         <span className="block text-[10px] font-black uppercase tracking-wider text-on-surface-variant">Your Browser Storage</span>
