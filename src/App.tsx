@@ -1144,10 +1144,19 @@ export default function App() {
         setSubmissions(mergedData);
         setStats(computedStats);
         setError(null);
+        if (result.configured !== undefined) {
+          setConfigStatus(prev => ({ ...prev, currentConfigured: result.configured }));
+        }
       } else {
         setLegacySubmissions(mergedData);
         setLegacyStats(computedStats);
         setLegacyError(null);
+        setConfigStatus(prev => ({
+          ...prev,
+          legacyConfigured: result.configured ?? (result.data && result.data.length > 0) ?? true,
+          legacyClassroomConfigured: result.classroomConfigured ?? true,
+          legacyInstrumentalConfigured: result.instrumentalConfigured ?? true
+        }));
       }
     } catch (err: any) {
       if (type === 'current') setError(err.message);
@@ -1165,7 +1174,14 @@ export default function App() {
         const text = await response.text();
         try {
           const status = JSON.parse(text);
-          setConfigStatus(status);
+          setConfigStatus(prev => ({
+            ...prev,
+            currentConfigured: status.currentConfigured ?? (status.current ?? prev.currentConfigured),
+            legacyConfigured: status.legacyConfigured ?? (status.classroomConfigured || status.instrumentalConfigured || status.legacyClassroomConfigured || status.legacyInstrumentalConfigured) ?? prev.legacyConfigured,
+            legacyClassroomConfigured: status.legacyClassroomConfigured ?? status.classroomConfigured ?? prev.legacyClassroomConfigured,
+            legacyInstrumentalConfigured: status.legacyInstrumentalConfigured ?? status.instrumentalConfigured ?? prev.legacyInstrumentalConfigured,
+            aiConfigured: status.aiConfigured ?? status.geminiConfigured ?? prev.aiConfigured
+          }));
         } catch (e) {
           console.error("Failed to parse status response:", text);
         }
@@ -3825,38 +3841,62 @@ export default function App() {
                   </div>
 
                   <div className="glass p-8 rounded-3xl space-y-6">
-                    <h2 className="text-2xl font-headline font-black">Connection Status</h2>
+                    <div className="flex items-center justify-between">
+                      <h2 className="text-2xl font-headline font-black">Connection Status</h2>
+                      <span className="text-[10px] font-black uppercase tracking-wider px-2 py-0.5 rounded-full bg-secondary-fixed/10 text-secondary-fixed border border-secondary-fixed/20">
+                        {legacySubmissions.length > 0 ? `${legacySubmissions.length} Archived Rows Loaded` : 'Live'}
+                      </span>
+                    </div>
                     <div className="space-y-4">
                       <div className="p-4 bg-surface-container-low rounded-xl border border-outline-variant/10">
-                        <label className="block text-[10px] font-bold uppercase tracking-widest text-on-surface-variant mb-1">Configuration Status</label>
-                        <div className="space-y-2 mt-2">
-                          <div className="flex items-center justify-between">
-                            <span className="text-xs font-medium">Current Sheet</span>
-                            <span className={`text-xs font-black p-1 px-2 rounded ${configStatus.currentConfigured ? 'bg-secondary-fixed/10 text-secondary-fixed' : 'bg-tertiary-container/10 text-tertiary-container'}`}>
-                              {configStatus.currentConfigured ? 'CONNECTED' : 'NOT CONNECTED'}
+                        <label className="block text-[10px] font-bold uppercase tracking-widest text-on-surface-variant mb-3">Live Feed & Google Sheets Integration</label>
+                        <div className="space-y-3">
+                          <div className="flex items-center justify-between py-1 border-b border-outline-variant/10">
+                            <div>
+                              <span className="text-xs font-bold block">Current Sheet</span>
+                              <span className="text-[10px] text-on-surface-variant">Env: <code>GOOGLE_SHEET_ID</code></span>
+                            </div>
+                            <span className={`text-xs font-black p-1 px-2.5 rounded-full ${configStatus.currentConfigured ? 'bg-secondary-fixed/10 text-secondary-fixed border border-secondary-fixed/20' : 'bg-surface-container text-on-surface-variant border border-outline-variant/20'}`}>
+                              {configStatus.currentConfigured ? 'CONNECTED' : 'DEMO MODE (Set GOOGLE_SHEET_ID)'}
                             </span>
                           </div>
-                          <div className="flex items-center justify-between">
-                            <span className="text-xs font-medium">Classroom Legacy Sheet</span>
-                            <span className={`text-xs font-black p-1 px-2 rounded ${configStatus.legacyClassroomConfigured ? 'bg-secondary-fixed/10 text-secondary-fixed' : 'bg-tertiary-container/10 text-tertiary-container'}`}>
+                          
+                          <div className="flex items-center justify-between py-1 border-b border-outline-variant/10">
+                            <div>
+                              <span className="text-xs font-bold block">Classroom Legacy Sheet</span>
+                              <span className="text-[10px] text-on-surface-variant font-mono">1GFIn6sf... (Jotform)</span>
+                            </div>
+                            <span className={`text-xs font-black p-1 px-2.5 rounded-full ${configStatus.legacyClassroomConfigured ? 'bg-secondary-fixed/10 text-secondary-fixed border border-secondary-fixed/20' : 'bg-tertiary-container/10 text-tertiary-container border border-tertiary-container/20'}`}>
                               {configStatus.legacyClassroomConfigured ? 'CONNECTED' : 'NOT CONNECTED'}
                             </span>
                           </div>
-                          <div className="flex items-center justify-between">
-                            <span className="text-xs font-medium">Instrumental Legacy Sheet</span>
-                            <span className={`text-xs font-black p-1 px-2 rounded ${configStatus.legacyInstrumentalConfigured ? 'bg-secondary-fixed/10 text-secondary-fixed' : 'bg-tertiary-container/10 text-tertiary-container'}`}>
+
+                          <div className="flex items-center justify-between py-1 border-b border-outline-variant/10">
+                            <div>
+                              <span className="text-xs font-bold block">Instrumental Legacy Sheet</span>
+                              <span className="text-[10px] text-on-surface-variant font-mono">17101J4-... (Jotform)</span>
+                            </div>
+                            <span className={`text-xs font-black p-1 px-2.5 rounded-full ${configStatus.legacyInstrumentalConfigured ? 'bg-secondary-fixed/10 text-secondary-fixed border border-secondary-fixed/20' : 'bg-tertiary-container/10 text-tertiary-container border border-tertiary-container/20'}`}>
                               {configStatus.legacyInstrumentalConfigured ? 'CONNECTED' : 'NOT CONNECTED'}
                             </span>
                           </div>
-                          <div className="flex items-center justify-between">
-                            <span className="text-xs font-medium">Combined Legacy Archive</span>
-                            <span className={`text-xs font-black p-1 px-2 rounded ${configStatus.legacyConfigured ? 'bg-secondary-fixed/10 text-secondary-fixed' : 'bg-tertiary-container/10 text-tertiary-container'}`}>
+
+                          <div className="flex items-center justify-between py-1 border-b border-outline-variant/10">
+                            <div>
+                              <span className="text-xs font-bold block">Combined Legacy Archive</span>
+                              <span className="text-[10px] text-on-surface-variant">{legacySubmissions.length} live records combined</span>
+                            </div>
+                            <span className={`text-xs font-black p-1 px-2.5 rounded-full ${configStatus.legacyConfigured ? 'bg-secondary-fixed/10 text-secondary-fixed border border-secondary-fixed/20' : 'bg-tertiary-container/10 text-tertiary-container border border-tertiary-container/20'}`}>
                               {configStatus.legacyConfigured ? 'CONNECTED' : 'NOT CONNECTED'}
                             </span>
                           </div>
-                          <div className="flex items-center justify-between">
-                            <span className="text-xs font-medium">AI Analysis Engine</span>
-                            <span className={`text-xs font-black p-1 px-2 rounded ${configStatus.aiConfigured ? 'bg-secondary-fixed/10 text-secondary-fixed' : 'bg-tertiary-container/10 text-tertiary-container'}`}>
+
+                          <div className="flex items-center justify-between py-1">
+                            <div>
+                              <span className="text-xs font-bold block">AI Analysis Engine</span>
+                              <span className="text-[10px] text-on-surface-variant">Model: Gemini 3.8 Flash</span>
+                            </div>
+                            <span className={`text-xs font-black p-1 px-2.5 rounded-full ${configStatus.aiConfigured ? 'bg-secondary-fixed/10 text-secondary-fixed border border-secondary-fixed/20' : 'bg-tertiary-container/10 text-tertiary-container border border-tertiary-container/20'}`}>
                               {configStatus.aiConfigured ? 'ACTIVE' : 'SIMULATED MODE'}
                             </span>
                           </div>

@@ -583,10 +583,19 @@ app.get(["/api/data/:type?", "/data/:type?"], async (req, res) => {
 
 // API Route to check configuration status
 app.get(["/api/status", "/status"], (req, res) => {
+  const currentSheetId = process.env.GOOGLE_SHEET_ID;
   const classroomSheetId = process.env.LEGACY_CLASSROOM_SHEET_ID || "1GFIn6sf9j9DEbhseJRzg-NSOW7Rhxj4SBeloKVwMklQ";
   const instrumentalSheetId = process.env.LEGACY_SHEET_ID || "17101J4-5MlMmbvw1-s-7I3IFENERImyRWsIkZgtJa1s";
+  const hasLegacy = !!(classroomSheetId || instrumentalSheetId);
+  const hasAi = !!process.env.GEMINI_API_KEY;
+
   res.json({
-    geminiConfigured: !!process.env.GEMINI_API_KEY,
+    currentConfigured: !!currentSheetId,
+    legacyConfigured: hasLegacy,
+    legacyClassroomConfigured: !!classroomSheetId,
+    legacyInstrumentalConfigured: !!instrumentalSheetId,
+    aiConfigured: hasAi,
+    geminiConfigured: hasAi,
     databaseConfigured: !!getDbUrl(),
     classroomConfigured: !!classroomSheetId,
     instrumentalConfigured: !!instrumentalSheetId,
