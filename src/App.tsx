@@ -833,8 +833,19 @@ export default function App() {
     return partialMatchKey ? row[partialMatchKey] : null;
   };
 
-  const processSheetData = (rawData: any[], source: 'current' | 'legacy') => {
-    return rawData.map((row: any, index: number) => {
+  const processSheetData = (rawData: any[], sourceInput: 'current' | 'legacy') => {
+    const source: 'current' | 'legacy' = sourceInput === 'legacy' ? 'legacy' : 'current';
+
+    // Filter out completely blank or empty rows (such as empty spreadsheet rows containing only nulls)
+    const validRows = rawData.filter((row: any) => {
+      if (!row || typeof row !== 'object') return false;
+      const contentKeys = Object.keys(row).filter(k => 
+        !['_sheetcategory', 'coursename', 'course name'].includes(k.toLowerCase().trim())
+      );
+      return contentKeys.some(k => row[k] !== null && row[k] !== '' && row[k] !== undefined);
+    });
+
+    return validRows.map((row: any, index: number) => {
       const rating = parseInt(getFuzzyVal(row, ['Rating', 'Score', 'CSAT']) || '0') || 0;
       const rawSentiment = (getFuzzyVal(row, ['Sentiment', 'Sentiment Tag', 'Feedback Type', 'Status']) || '').toString().toUpperCase();
       
@@ -850,8 +861,13 @@ export default function App() {
       // Extract only student response values to avoid false matching on question headers
       const answersOnly = questions.map(q => String(row[q] || '')).join(' ').toLowerCase();
 
-      // Count facets not enjoyed specifically from the answer
-      const facetsRaw = (getFuzzyVal(row, ["Please select any facet(s) you didn't enjoy"]) || '').toString().trim();
+      // Count facets/lessons not enjoyed specifically from the answer
+      const facetsRaw = (getFuzzyVal(row, [
+        "Please select any facet(s) you didn't enjoy",
+        "Please select any lesson(s) you didn't enjoy",
+        "Any facet(s) you didn't enjoy",
+        "Any lesson(s) you didn't enjoy"
+      ]) || '').toString().trim();
       const isNoneFacet = !facetsRaw || 
                           facetsRaw.toLowerCase() === 'none' || 
                           facetsRaw.toLowerCase() === 'n/a' || 
@@ -1034,7 +1050,8 @@ export default function App() {
     };
   };
 
-  const fetchData = async (type: 'current' | 'legacy' = 'current') => {
+  const fetchData = async (typeInput: 'current' | 'legacy' | any = 'current') => {
+    const type: 'current' | 'legacy' = typeInput === 'legacy' ? 'legacy' : 'current';
     console.log(`[Frontend] Fetching ${type} data...`);
     if (type === 'current') setLoading(true);
     else setLegacyLoading(true);
@@ -1081,7 +1098,7 @@ export default function App() {
 
       const processed = processSheetData(result.data || [], type);
       
-      // Merge with persisted evaluations: fetch server evaluations + local cache
+      // Fetch shared server evaluations (primary source of truth backed by database)
       let serverEvaluations: Record<string, any> = {};
       try {
         const evalRes = await fetch('/api/evaluations');
@@ -1106,24 +1123,11 @@ export default function App() {
         console.error("Error reading persisted evaluations from localStorage", e);
       }
 
-      const localCount = Object.keys(localEvaluations).length;
-      const serverCount = Object.keys(serverEvaluations).length;
+      // Merge evaluations: Server evaluations are the primary source of truth across all devices and colleagues.
+      // If local cache has extra reviewed items not yet on the server, include them. Server data always takes precedence.
+      const combinedEvaluations = { ...localEvaluations, ...serverEvaluations };
 
-      // If user has local evaluations not yet saved on server, auto-sync so all visitors/boss see them
-      if (localCount > 0 && localCount >= serverCount) {
-        fetch('/api/evaluations', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ evaluations: localEvaluations })
-        }).then(r => r.json()).then(j => {
-          if (j.count) setServerEvaluationCount(j.count);
-        }).catch(e => console.warn('Auto-sync to server background error:', e));
-      }
-
-      // Merge evaluations (local overrides or supplements server)
-      const combinedEvaluations = { ...serverEvaluations, ...localEvaluations };
-
-      // Also persist back to localStorage so if the boss opens the link, their local cache also has it
+      // Update local storage to keep client cache in sync with the central server source of truth
       if (Object.keys(combinedEvaluations).length > 0) {
         try {
           localStorage.setItem('feedback_evaluations', JSON.stringify(combinedEvaluations));
@@ -1137,7 +1141,7 @@ export default function App() {
         return s;
       });
       
-      console.log(`[Frontend] Processed ${mergedData.length} ${type} submissions (merged with local overrides).`);
+      console.log(`[Frontend] Processed ${mergedData.length} ${type} submissions (merged with evaluations).`);
       const computedStats = calculateStats(mergedData);
 
       if (type === 'current') {
@@ -1355,7 +1359,10 @@ export default function App() {
 
           <div className="space-y-4">
             <button 
-              onClick={fetchData}
+              onClick={() => {
+                fetchData('current');
+                fetchData('legacy');
+              }}
               className="w-full bg-primary text-on-primary py-4 rounded-xl font-headline font-bold uppercase tracking-wider hover:opacity-90 transition-all shadow-lg shadow-primary/20"
             >
               Check Connection Again
@@ -1601,7 +1608,10 @@ export default function App() {
                 </AnimatePresence>
               </div>
               <button 
-                onClick={fetchData}
+                onClick={() => {
+                  fetchData('current');
+                  fetchData('legacy');
+                }}
                 disabled={loading}
                 className="bg-gradient-to-br from-primary to-primary-container text-on-primary px-6 py-2 rounded-lg text-sm font-headline font-bold uppercase tracking-wider flex items-center gap-2 hover:opacity-90 active:scale-95 transition-all shadow-lg shadow-primary/20 disabled:opacity-50"
               >
@@ -1624,7 +1634,7 @@ export default function App() {
               <AlertTriangle size={48} className="text-tertiary-container mx-auto" />
               <h2 className="text-xl font-headline font-black">Sync Error</h2>
               <p className="text-on-surface-variant max-w-md mx-auto">{error}</p>
-              <button onClick={fetchData} className="text-primary font-bold hover:underline">Try again</button>
+              <button onClick={() => fetchData('current')} className="text-primary font-bold hover:underline">Try again</button>
             </div>
           ) : (
             <AnimatePresence mode="wait">
@@ -4025,7 +4035,10 @@ export default function App() {
                       </div>
                     </div>
                     <button 
-                      onClick={() => fetchData()}
+                      onClick={() => {
+                        fetchData('current');
+                        fetchData('legacy');
+                      }}
                       className="w-full py-4 bg-primary text-on-primary rounded-xl font-black uppercase tracking-widest text-xs hover:scale-[1.02] transition-transform"
                     >
                       Refresh Sync Now
