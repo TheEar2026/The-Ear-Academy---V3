@@ -1,8 +1,8 @@
 import express from "express";
 import path from "path";
-import app from "./api/index";
+import app from "./api/index.ts";
 
-const PORT = 3000;
+const PORT = Number(process.env.PORT) || 3000;
 
 async function startServer() {
   if (process.env.NODE_ENV !== "production" && !process.env.VERCEL) {
